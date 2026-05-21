@@ -68,3 +68,21 @@ cd nesrecomp-mingw
 # Build and run
 mingw32-make recomp ROM=roms/dk.nes GAME=DonkeyKong
 bin/nesrecomp.exe roms/dk.nes
+
+#linux 
+
+Ubuntu/Debian:
+
+sudo apt install build-essential libsdl2-dev python3 make git
+
+Arch:
+
+sudo pacman -S base-devel sdl2 python git
+
+Fedora:
+
+sudo dnf install gcc SDL2-devel python3 make git
+
+make recomp ROM=roms/dk.nes GAME=DonkeyKong
+
+./bin/nesrecomp roms/dk.nes
