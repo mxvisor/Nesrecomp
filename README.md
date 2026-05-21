@@ -108,3 +108,9 @@ gcc -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
 
 and play game: 
 ./bin/nesrecomp roms/Felix.nes
+
+
+addding for audio install:
+sudo apt install pulseaudio -y
+starting
+pulseaudio --start
