@@ -59,7 +59,7 @@ Fixing mappers and bugs
 # Then in the MSYS2/MinGW64 terminal:
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-git clone https://github.com/YOUR_LOGIN/nesrecomp-mingw.git
+git clone https://github.com/denisfox3554/Nesrecomp
 cd nesrecomp-mingw
 
 # Place your ROM in the roms/ folder
