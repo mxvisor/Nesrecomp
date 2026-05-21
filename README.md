@@ -86,3 +86,25 @@ sudo dnf install gcc SDL2-devel python3 make git
 make recomp ROM=roms/dk.nes GAME=DonkeyKong
 
 ./bin/nesrecomp roms/dk.nes
+
+
+sudo apt install build-essential libsdl2-dev python3 make git -y
+
+Adding rom
+mkdir -p roms
+cp /mnt/d/path/to/Felix.nes roms/   (for example)
+
+GENERATE code
+python3 nesrecomp.py roms/Felix.nes --out generated --game FelixTheCat
+
+BUILD GAME: 
+mkdir -p bin
+gcc -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
+    -I. -I/usr/include/SDL2 \
+    memory.c mapper.c ppu.c apu.c cpu_interp.c runner.c \
+    generated/FelixTheCat_full.c \
+    -lSDL2 -lSDL2main -lm \
+    -o bin/nesrecomp
+
+and play game: 
+./bin/nesrecomp roms/Felix.nes
