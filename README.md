@@ -24,6 +24,14 @@ This is a fork of [NESRecomp](https://github.com/mstan/nesrecomp), adapted for b
 - ✅ **F5 save game**
 - ✅ **F8 load save game**
 
+
+Next Features:
+**CRT**
+**turbo mode**
+**menu UX**
+**gamepad support**
+**ADDING mappers**
+**Fixing mappers and bugs**
 ---
 
 ## 🎮 Supported Games
@@ -31,13 +39,14 @@ This is a fork of [NESRecomp](https://github.com/mstan/nesrecomp), adapted for b
 | Game | Mapper | Status |
 |------|--------|--------|
 | Donkey Kong | 0 (NROM) | ✅ Complete |
-| Super Mario Bros. | 0 (NROM) | ✅ Working |
+| Super Mario Bros. | 0 (NROM) | ✅ Complete |
 | Adventure Island | 3 (CNROM) | ✅ Complete |
 | Castlevania | 2 (UNROM) | ✅ Complete |
 | DuckTales | 2 (UNROM) | ✅ Complete |
 | Mega Man | 2 (UNROM) | ✅ Complete |
 | Dragons of Flame | 1 (MMC1) | ✅ Complete |
-| Mega Man 4 | 4 (MMC3) | ⚠️ In Progress |
+| Mega Man 4 | 4 (MMC3) | ✅ Complete with fixing bug mappers loading level with walking|
+| FElix the cat|        | ✅ Complete |
 
 ---
 
