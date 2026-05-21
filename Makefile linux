@@ -1,0 +1,61 @@
+CC = gcc
+
+UNAME_S := $(shell uname -s)
+
+CFLAGS = -O2 -Wall -Wextra \
+         -Wno-unused-parameter \
+         -Wno-unused-variable \
+         -Irunner/include \
+         $(shell sdl2-config --cflags)
+
+ifeq ($(UNAME_S),Linux)
+
+    TARGET = $(BINDIR)/nesrecomp
+
+    LDFLAGS = $(shell sdl2-config --libs) -lm
+
+else
+
+
+    LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L/mingw64/lib -lSDL2main -lSDL2) \
+               -lmingw32 -lm
+
+endif
+
+ALL_SRCS = $(RUNNER_SRCS) $(GAME_SRCS)
+OBJDIR   = build
+OBJS     = $(patsubst %.c,$(OBJDIR)/%.o,$(ALL_SRCS))
+
+.PHONY: all clean recomp dirs
+
+all: dirs $(TARGET)
+
+$(TARGET): $(OBJS)
+	@echo [LINK] $@
+	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+	@echo Build successful: $@
+
+$(OBJDIR)/%.o: %.c
+	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
+	@echo [CC] $<
+	$(CC) $(CFLAGS) -c $< -o $@
+
+dirs:
+	@if not exist $(BINDIR) mkdir $(BINDIR)
+	@if not exist $(OBJDIR) mkdir $(OBJDIR)
+	@if not exist generated mkdir generated
+
+recomp:
+ifndef ROM
+	$(error ROM not set)
+endif
+ifndef GAME
+	$(error GAME not set)
+endif
+	python recompiler/nesrecomp.py $(ROM) --out generated --game $(GAME)
+	$(MAKE) GAME=$(GAME)
+
+clean:
+	@if exist $(OBJDIR) rmdir /S /Q $(OBJDIR)
+	@if exist $(BINDIR) rmdir /S /Q $(BINDIR)
+	@echo Cleaned.
