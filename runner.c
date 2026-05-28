@@ -1,62 +1,24 @@
 #include "runner.h"
 #include <SDL2/SDL.h>
 
+/* embedded data provided via -include generated/$(GAME)_embedded_data.h */
+
 /* =========================================================================
-   ROM loading
+   ROM loading (embedded data mode — no external ROM file needed)
    ========================================================================= */
 static int load_rom(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "[runner] Cannot open ROM: %s\n", path); return 0; }
+    (void)path;
 
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    uint8_t *data = (uint8_t*)malloc(sz);
-    if (!data) {
-        fclose(f);
-        return 0;
-    }
-
-    fread(data, 1, sz, f);
-    fclose(f);
-
-    if (data[0]!='N'||data[1]!='E'||data[2]!='S'||data[3]!=0x1A) {
-        fprintf(stderr, "[runner] Not a valid iNES ROM\n");
-        free(data);
-        return 0;
-    }
-
-    int prg_banks   = data[4];
-    int chr_banks   = data[5];
-    int flags6      = data[6];
-    int flags7      = data[7];
-    int mapper_id   = (flags7 & 0xF0) | (flags6 >> 4);
-    int mirroring   = (flags6 & 1) ? 1 : 0;
-    int has_trainer = (flags6 & 4) ? 1 : 0;
-
-    int offset = 16 + (has_trainer ? 512 : 0);
-
-    prg_rom_size = (uint32_t)prg_banks * 16384;
+    prg_rom_size = EMBEDDED_PRG_SIZE;
     if (prg_rom_size > PRG_ROM_MAX)
         prg_rom_size = PRG_ROM_MAX;
 
-    memcpy(prg_rom, data + offset, prg_rom_size);
+    memcpy(prg_rom, embedded_prg_rom, prg_rom_size);
+    memcpy(ppu.chr,  embedded_chr_rom, EMBEDDED_CHR_SIZE);
 
-    if (chr_banks > 0) {
-        uint32_t chr_size = (uint32_t)chr_banks * 8192;
+    mapper_init(EMBEDDED_MAPPER_ID, EMBEDDED_PRG_BANKS,
+                EMBEDDED_CHR_BANKS, EMBEDDED_MIRRORING);
 
-        if (chr_size > sizeof(ppu.chr))
-            chr_size = sizeof(ppu.chr);
-
-        memcpy(ppu.chr, data + offset + prg_rom_size, chr_size);
-    } else {
-        memset(ppu.chr, 0x00, 0x2000);
-    }
-
-    mapper_init(mapper_id, prg_banks, chr_banks, mirroring);
-
-    free(data);
     return 1;
 }
 
@@ -222,39 +184,14 @@ void nes_reset(void) {
    runner_init
    ========================================================================= */
 int runner_init(const char *title, const char *rom_path) {
+    (void)rom_path;
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "[runner] SDL_Init: %s\n", SDL_GetError());
         return 0;
     }
 
-    const char *game_name = rom_path;
-
-    const char *slash  = strrchr(rom_path, '\\');
-    const char *slash2 = strrchr(rom_path, '/');
-
-    if (slash2 > slash)
-        slash = slash2;
-
-    if (slash)
-        game_name = slash + 1;
-
-    char display_name[256];
-
-    const char *dot = strrchr(game_name, '.');
-
-    if (dot && dot > game_name) {
-        int len = dot - game_name;
-
-        if (len > 250)
-            len = 250;
-
-        strncpy(display_name, game_name, len);
-        display_name[len] = '\0';
-    } else {
-        strncpy(display_name, game_name, 255);
-        display_name[255] = '\0';
-    }
+    const char *display_name = title;
 
     window = SDL_CreateWindow(
     display_name,
@@ -526,12 +463,9 @@ void runner_quit(void) {
    ========================================================================= */
 int main(int argc, char **argv) {
 
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <rom.nes>\n", argv[0]);
-        return 1;
-    }
+    const char *rom_path = (argc >= 2) ? argv[1] : NULL;
 
-    if (!runner_init(argv[1], argv[1]))
+    if (!runner_init("NESRecomp", rom_path))
         return 1;
 
     runner_run();

@@ -1,0 +1,10 @@
+bin/
+build/
+generated/
+roms/
+*.png
+*.ppm
+*.log
+.groupedtimelineinclude
+.history/
+.vscode-ctags
