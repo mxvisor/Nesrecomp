@@ -195,6 +195,29 @@ static void fetch_bg_tile(void) {
     ppu.bg_pal_hi = (ppu.bg_pal_hi & 0xFF00) | ((pal & 2) ? 0xFF : 0x00);
 }
 
+static void fetch_bg_tile_high(void) {
+    uint16_t nt_addr = 0x2000 | (ppu.v_addr & 0x0FFF);
+    uint8_t  tile    = vram_read(nt_addr);
+
+    uint16_t at_addr = 0x23C0
+                     | (ppu.v_addr & 0x0C00)
+                     | ((ppu.v_addr >> 4) & 0x38)
+                     | ((ppu.v_addr >> 2) & 0x07);
+    uint8_t  attr  = vram_read(at_addr);
+    uint8_t  shift = ((ppu.v_addr >> 4) & 4) | (ppu.v_addr & 2);
+    uint8_t  pal   = (attr >> shift) & 3;
+
+    uint16_t pt_base = (ppu.regs[0] & 0x10) ? 0x1000 : 0x0000;
+    uint8_t  fine_y  = (ppu.v_addr >> 12) & 7;
+    uint8_t  lo      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y);
+    uint8_t  hi      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y + 8);
+
+    ppu.bg_lo     = (ppu.bg_lo     & 0x00FF) | ((uint16_t)lo << 8);
+    ppu.bg_hi     = (ppu.bg_hi     & 0x00FF) | ((uint16_t)hi << 8);
+    ppu.bg_pal_lo = (ppu.bg_pal_lo & 0x00FF) | (((pal & 1) ? 0xFF : 0x00) << 8);
+    ppu.bg_pal_hi = (ppu.bg_pal_hi & 0x00FF) | (((pal & 2) ? 0xFF : 0x00) << 8);
+}
+
 /* =========================================================================
    Sprite evaluation
    ========================================================================= */
@@ -254,12 +277,23 @@ void ppu_step(void) {
     int dot      = ppu.cycle;
     int scanline = ppu.scanline;
 
-    /* ---- Visible scanlines 0–239 ---- */
-    if (scanline < 240) {
+    /* ---- Visible scanlines 0–239 AND pre-render scanline 261 ---- */
+    if (scanline < 240 || (scanline == 261 && RENDER)) {
+
+#define RENDER_PIXELS (scanline < 240)
+
+        /* BG tile fetching ДО pixel — иначе gap на границе тайлов */
+        if (RENDER) {
+            if (dot >= 9 && dot <= 257 && (dot & 7) == 1) {
+                fetch_bg_tile();
+                if (dot < 257) inc_hori_v();
+            }
+        }
 
         /* Pixel output: dots 1–256 */
         if (dot >= 1 && dot <= 256) {
             int x = dot - 1;
+            int out_x = (x + 245) % 256;
 
             uint8_t bg_pixel = 0, bg_pal = 0;
             if (BG_EN && (x >= 8 || (ppu.regs[1] & 0x02))) {
@@ -270,69 +304,60 @@ void ppu_step(void) {
                          | ((ppu.bg_pal_hi & mux) ? 2 : 0);
             }
 
-            uint8_t sp_pixel = 0, sp_pal = 0, sp_priority = 0;
-            if (SP_EN && (x >= 8 || (ppu.regs[1] & 0x04))) {
-                for (int i = 0; i < ppu.sprite_count; i++) {
-                    int sx = x - (int)ppu.sp_x[i];
-                    if (sx < 0 || sx > 7) continue;
-                    uint8_t lo = (ppu.sp_pattern_lo[i] >> (7 - sx)) & 1;
-                    uint8_t hi = (ppu.sp_pattern_hi[i] >> (7 - sx)) & 1;
-                    uint8_t p  = lo | (hi << 1);
-                    if (!p) continue;
-                    if (i == 0 && ppu.sp_zero_on_line && bg_pixel && x < 255)
-                        ppu.regs[2] |= 0x40;
-                    sp_pixel    = p;
-                    sp_pal      = (ppu.sp_attr[i] & 3) + 4;
-                    sp_priority = (ppu.sp_attr[i] >> 5) & 1;
-                    break;
+            if (RENDER_PIXELS) {
+                uint8_t sp_pixel = 0, sp_pal = 0, sp_priority = 0;
+                if (SP_EN && (x >= 8 || (ppu.regs[1] & 0x04))) {
+                    for (int i = 0; i < ppu.sprite_count; i++) {
+                        int sx = x - (int)ppu.sp_x[i];
+                        if (sx < 0 || sx > 7) continue;
+                        uint8_t lo = (ppu.sp_pattern_lo[i] >> (7 - sx)) & 1;
+                        uint8_t hi = (ppu.sp_pattern_hi[i] >> (7 - sx)) & 1;
+                        uint8_t p  = lo | (hi << 1);
+                        if (!p) continue;
+                        if (i == 0 && ppu.sp_zero_on_line && bg_pixel && x < 255)
+                            ppu.regs[2] |= 0x40;
+                        sp_pixel    = p;
+                        sp_pal      = (ppu.sp_attr[i] & 3) + 4;
+                        sp_priority = (ppu.sp_attr[i] >> 5) & 1;
+                        break;
+                    }
                 }
-            }
 
-            uint8_t pal_addr;
-            if      (!bg_pixel && !sp_pixel) pal_addr = 0;
-            else if (!bg_pixel &&  sp_pixel) pal_addr = sp_pal  * 4 + sp_pixel;
-            else if ( bg_pixel && !sp_pixel) pal_addr = bg_pal  * 4 + bg_pixel;
-            else {
-                pal_addr = sp_priority ? (bg_pal * 4 + bg_pixel)
-                                       : (sp_pal * 4 + sp_pixel);
+                uint8_t pal_addr;
+                if      (!bg_pixel && !sp_pixel) pal_addr = 0;
+                else if (!bg_pixel &&  sp_pixel) pal_addr = sp_pal  * 4 + sp_pixel;
+                else if ( bg_pixel && !sp_pixel) pal_addr = bg_pal  * 4 + bg_pixel;
+                else {
+                    pal_addr = sp_priority ? (bg_pal * 4 + bg_pixel)
+                                           : (sp_pal * 4 + sp_pixel);
+                }
+                uint8_t color = vram_read(0x3F00 + pal_addr);
+                ppu.framebuf[scanline * SCREEN_W + out_x] = PALETTE[color & 0x3F];
             }
-            uint8_t color = vram_read(0x3F00 + pal_addr);
-            ppu.framebuf[scanline * SCREEN_W + x] = PALETTE[color & 0x3F];
 
             ppu.bg_lo     <<= 1; ppu.bg_hi     <<= 1;
             ppu.bg_pal_lo <<= 1; ppu.bg_pal_hi <<= 1;
         }
 
-        /* BG tile fetching */
+        /* Остальное (inc/copy/prefetch) */
         if (RENDER) {
-            if (dot >= 9 && dot <= 257 && (dot & 7) == 1) {
-                fetch_bg_tile();
-                if (dot < 257) inc_hori_v();
-            }
             if (dot == 256) inc_vert_v();
             if (dot == 257) copy_hori_v();
+            if (scanline == 261 && dot >= 280 && dot <= 304) copy_vert_v();
+            if (dot == 321) { fetch_bg_tile_high(); inc_hori_v(); }
             if (dot == 329) { fetch_bg_tile(); inc_hori_v(); }
-            if (dot == 337) { fetch_bg_tile(); inc_hori_v(); }
         }
 
         if (dot == 257)
             eval_sprites(scanline + 1 < 240 ? scanline + 1 : 0);
+
+#undef RENDER_PIXELS
     }
 
-    /* ---- Pre-render scanline 261 ---- */
-    if (scanline == 261) {
-        if (dot == 1) {
-            ppu.regs[2] &= ~0xE0;
-            ppu.nmi_suppressed = 0;
-        }
-        if (RENDER) {
-            if (dot >= 280 && dot <= 304) copy_vert_v();
-            if (dot == 256) inc_vert_v();
-            if (dot == 257) copy_hori_v();
-            if (dot == 329) { fetch_bg_tile(); inc_hori_v(); }
-            if (dot == 337) { fetch_bg_tile(); inc_hori_v(); }
-        }
-        if (dot == 257) eval_sprites(0);
+    /* ---- Pre-render scanline 261: special ops at dot 1 ---- */
+    if (scanline == 261 && dot == 1) {
+        ppu.regs[2] &= ~0xE0;
+        ppu.nmi_suppressed = 0;
     }
 
     /* ---- VBlank: scanline 241, dot 1 ---- */

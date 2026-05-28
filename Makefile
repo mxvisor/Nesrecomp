@@ -1,38 +1,43 @@
-# ============================================================
-#  NES Static Recompiler — Makefile for MinGW (mingw32-make)
-#  Usage:
-#    mingw32-make           — build with stub (no ROM)
-#    mingw32-make GAME=mygame — build with generated/mygame_full.c
-#    mingw32-make recomp ROM=game.nes GAME=mygame — run recompiler then build
-#    mingw32-make clean
-# ============================================================
+CC = gcc
 
-CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter \
-           -Irunner/include \
-           $(shell sdl2-config --cflags 2>NUL || echo -I$(MSYS2_PREFIX)/include/SDL2 -DSDL_MAIN_HANDLED)
-LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L$(MSYS2_PREFIX)/lib -lSDL2main -lSDL2) \
-           -lmingw32 -mwindows
-# For a console window (debug), replace -mwindows with -mconsole
+UNAME_S := $(shell uname -s)
 
+GAME    ?= stub
 BINDIR  = bin
-TARGET  = $(BINDIR)/nesrecomp.exe
+OBJDIR  = build
+
+ifeq ($(UNAME_S),Linux)
+
+    TARGET = $(BINDIR)/nesrecomp
+
+    LDFLAGS = $(shell sdl2-config --libs) -lm
+
+else
+
+    TARGET = $(BINDIR)/nesrecomp.exe
+
+    LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L/mingw64/lib -lSDL2main -lSDL2) \
+               -lmingw32 -lm
+
+endif
+
+CFLAGS = -O2 -Wall -Wextra \
+         -Wno-unused-parameter \
+         -Wno-unused-variable \
+         -Iinclude \
+         $(shell sdl2-config --cflags)
 
 RUNNER_SRCS = \
-    runner/src/memory.c \
-    runner/src/cpu_interp.c \
-    runner/src/ppu.c \
-    runner/src/apu.c \
-    runner/src/mapper.c \
-    runner/src/runner.c
-
-# Game generated code — override GAME= to use your game
-GAME ?= stub
+    memory.c \
+    cpu_interp.c \
+    ppu.c \
+    apu.c \
+    mapper.c \
+    runner.c
 
 FULL_SRC     = generated/$(GAME)_full.c
 DISPATCH_SRC = generated/$(GAME)_dispatch.c
 
-# If dispatch file exists, use it; otherwise fall back to stub
 ifeq ($(wildcard $(DISPATCH_SRC)),)
     GAME_SRCS = $(FULL_SRC)
 else
@@ -41,13 +46,7 @@ endif
 
 ALL_SRCS = $(RUNNER_SRCS) $(GAME_SRCS)
 
-# Object files go into build/
-OBJDIR = build
-OBJS   = $(patsubst %.c,$(OBJDIR)/%.o,$(ALL_SRCS))
-
-# ============================================================
-#  Targets
-# ============================================================
+OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(ALL_SRCS))
 
 .PHONY: all clean recomp dirs
 
@@ -59,33 +58,26 @@ $(TARGET): $(OBJS)
 	@echo Build successful: $@
 
 $(OBJDIR)/%.o: %.c
-	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
+	@mkdir -p $(dir $@)
 	@echo [CC] $<
 	$(CC) $(CFLAGS) -c $< -o $@
 
 dirs:
-	@if not exist $(BINDIR) mkdir $(BINDIR)
-	@if not exist $(OBJDIR) mkdir $(OBJDIR)
-	@if not exist generated  mkdir generated
+	@mkdir -p $(BINDIR)
+	@mkdir -p $(OBJDIR)
+	@mkdir -p generated
 
-# ============================================================
-#  Run the Python recompiler, then build
-# ============================================================
 recomp:
 ifndef ROM
-	$(error ROM is not set. Use: mingw32-make recomp ROM=game.nes GAME=mygame)
+	$(error ROM not set)
 endif
 ifndef GAME
-	$(error GAME is not set. Use: mingw32-make recomp ROM=game.nes GAME=mygame)
+	$(error GAME not set)
 endif
-	@echo [RECOMP] $(ROM) -> generated/$(GAME)_full.c
-	python recompiler/nesrecomp.py $(ROM) --out generated --game $(GAME)
+	python3 nesrecomp.py $(ROM) --out generated --game $(GAME)
 	$(MAKE) GAME=$(GAME)
 
-# ============================================================
-#  Clean
-# ============================================================
 clean:
-	@if exist $(OBJDIR) rmdir /S /Q $(OBJDIR)
-	@if exist $(BINDIR) rmdir /S /Q $(BINDIR)
+	rm -rf $(OBJDIR)
+	rm -rf $(BINDIR)
 	@echo Cleaned.
