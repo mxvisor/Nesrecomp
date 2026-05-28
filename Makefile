@@ -6,16 +6,19 @@ GAME    ?= stub
 BINDIR  = bin
 OBJDIR  = build
 
+# ============================================================
+#  Platform-specific
+# ============================================================
 ifeq ($(UNAME_S),Linux)
 
-    TARGET = $(BINDIR)/$(GAME)
-
+    TARGET  = $(BINDIR)/$(GAME)
+    PYTHON  = python3
     LDFLAGS = $(shell sdl2-config --libs) -lm
 
 else
 
-    TARGET = $(BINDIR)/$(GAME).exe
-
+    TARGET  = $(BINDIR)/$(GAME).exe
+    PYTHON  = python
     LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L/mingw64/lib -lSDL2main -lSDL2) \
                -lmingw32 -lm
 
@@ -56,6 +59,32 @@ endif
 
 OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(ALL_SRCS))
 
+# ============================================================
+#  Platform-specific shell commands
+#  $(if ...) is expanded by MAKE, shell only sees the result
+# ============================================================
+# Create directory for a single object file (dir is $(dir $@))
+MKDIR_OBJ = $(if $(filter Linux,$(UNAME_S)),\
+                mkdir -p $(dir $@),\
+                if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))")
+
+# Create top-level build dirs
+MKDIR_DIRS = $(if $(filter Linux,$(UNAME_S)),\
+                mkdir -p $(BINDIR) $(OBJDIR) generated,\
+                (if not exist $(BINDIR) mkdir $(BINDIR)) & \
+                (if not exist $(OBJDIR) mkdir $(OBJDIR)) & \
+                (if not exist generated mkdir generated))
+
+# Clean
+CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
+                rm -rf $(OBJDIR) $(BINDIR),\
+                (if exist $(OBJDIR) rmdir /S /Q $(OBJDIR)) & \
+                (if exist $(BINDIR) rmdir /S /Q $(BINDIR)))
+
+# ============================================================
+#  Targets
+# ============================================================
+
 .PHONY: all clean recomp dirs
 
 all: dirs $(TARGET)
@@ -66,19 +95,18 @@ $(TARGET): $(OBJS)
 	@echo Build successful: $@
 
 $(OBJDIR)/%.o: %.c
-	@mkdir -p $(dir $@)
+	@$(MKDIR_OBJ)
 	@echo [CC] $<
 	$(CC) $(CFLAGS) -c $< -o $@
 
 dirs:
-	@mkdir -p $(BINDIR)
-	@mkdir -p $(OBJDIR)
-	@mkdir -p generated
+	@$(MKDIR_DIRS)
 
-# Generate embedded data – also called by 'recomp'
+# Generate embedded data from ROM
 gen_embed:
-	python3 tools/extract_nes_data.py $(ROM) --game $(GAME) --out generated
+	$(PYTHON) tools/extract_nes_data.py $(ROM) --game $(GAME) --out generated
 
+# Recompile ROM, then build
 recomp:
 ifndef ROM
 	$(error ROM not set)
@@ -87,10 +115,10 @@ ifndef GAME
 	$(error GAME not set)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	python3 nesrecomp.py $(ROM) --out generated --game $(GAME)
+	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME)
 	$(MAKE) GAME=$(GAME)
 
+# Clean
 clean:
-	rm -rf $(OBJDIR)
-	rm -rf $(BINDIR)
+	@$(CLEAN_CMD)
 	@echo Cleaned.
