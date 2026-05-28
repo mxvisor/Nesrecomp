@@ -136,7 +136,7 @@ ifndef GAME
 	$(error GAME not set)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg $(GAME).cfg
+	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg $(GAME).cfg $(if $(ASM),--asm $(ASM))
 	$(MAKE) GAME=$(GAME)
 
 # Clean
