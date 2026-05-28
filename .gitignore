@@ -5,6 +5,7 @@ roms/
 *.png
 *.ppm
 *.log
+*.cfg
 .groupedtimelineinclude
 .history/
 .vscode-ctags
