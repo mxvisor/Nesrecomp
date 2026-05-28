@@ -91,10 +91,11 @@ MKDIR_OBJ = $(if $(filter Linux,$(UNAME_S)),\
 
 # Create top-level build dirs
 MKDIR_DIRS = $(if $(filter Linux,$(UNAME_S)),\
-                mkdir -p $(BINDIR) $(OBJDIR) generated,\
+                mkdir -p $(BINDIR) $(OBJDIR) generated cfg,\
                 (if not exist $(BINDIR) mkdir $(BINDIR)) & \
                 (if not exist $(OBJDIR) mkdir $(OBJDIR)) & \
-                (if not exist generated mkdir generated))
+                (if not exist generated mkdir generated) & \
+                (if not exist cfg mkdir cfg))
 
 # Clean
 CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
@@ -136,7 +137,7 @@ ifndef GAME
 	$(error GAME not set)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg $(GAME).cfg $(if $(ASM),--asm $(ASM))
+	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(if $(ASM),--asm $(ASM))
 	$(MAKE) GAME=$(GAME)
 
 # Clean

@@ -2,6 +2,9 @@ bin/
 build/
 generated/
 roms/
+cfg/
+asm/
+fm2/
 *.png
 *.ppm
 *.log

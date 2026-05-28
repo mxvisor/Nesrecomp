@@ -227,16 +227,17 @@ _MORE_UNDOC: Dict[int, Op] = {
     0x93: Op("AHX","izy",2,6),  0x9B: Op("TAS","aby",3,5),
     0x9C: Op("SHY","abx",3,5),  0x9E: Op("SHX","aby",3,5),
     0x9F: Op("AHX","aby",3,5),  0xBB: Op("LAR","aby",3,4),
-    0xB2: Op("LAX","izy",2,5),
-    # -- NOP variants not yet covered --
-    0x12: Op("NOP","zp",2,3),  0x32: Op("NOP","zp",2,3),
-    0x52: Op("NOP","zp",2,3),  0x72: Op("NOP","zp",2,3),
-    0xD2: Op("NOP","zp",2,3),  0xF2: Op("NOP","zp",2,3),
-    0x92: Op("NOP","imp",1,2),
+    # -- STP (Stop/JAM/KIL) — halts the CPU (all 12 canonical slots)
+    0x02: Op("STP","imp",1,1),  0x12: Op("STP","imp",1,1),
+    0x22: Op("STP","imp",1,1),  0x32: Op("STP","imp",1,1),
+    0x42: Op("STP","imp",1,1),  0x52: Op("STP","imp",1,1),
+    0x62: Op("STP","imp",1,1),  0x72: Op("STP","imp",1,1),
+    0x92: Op("STP","imp",1,1),  0xB2: Op("STP","imp",1,1),
+    0xD2: Op("STP","imp",1,1),  0xF2: Op("STP","imp",1,1),
 }
 OPTABLE.update(_MORE_UNDOC)
 
-TERMINATORS = {"RTS", "RTI", "JMP", "BRK"}
+TERMINATORS = {"RTS", "RTI", "JMP", "BRK", "STP"}
 BRANCH_OPS  = {"BCC","BCS","BEQ","BNE","BMI","BPL","BVC","BVS"}
 
 # ---------------------------------------------------------------------------
@@ -383,7 +384,8 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
                    "stack_push(get_P() | 0x10);",
                    "cpu.I = 1;",
                    "cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);",
-                   "return;"]
+                    "return;"]
+    elif mn == "STP": lines += ["/* STP — halt */", "return;"]
     elif mn == "JSR":
         tgt = operand & 0xFFFF
         # Push return_addr-1 = (pc+3)-1 = pc+2 (high byte first)

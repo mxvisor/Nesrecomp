@@ -1,6 +1,7 @@
 #include "runner.h"
 #include <SDL2/SDL.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 /* Flag set by SIGTERM handler so runner_run() exits cleanly */
 static volatile int g_running = 1;
@@ -231,7 +232,8 @@ static void runner_miss_init(void) {
     const char *game = getenv("GAME");
     if (!game) game = "game";
     char path[512];
-    snprintf(path, sizeof(path), "%s.cfg", game);
+    mkdir("cfg", 0755);
+    snprintf(path, sizeof(path), "cfg/%s.cfg", game);
     miss_path = strdup(path);
     if (!miss_path) { free(miss_map); miss_map = NULL; return; }
     /* load existing misses to avoid duplicates */
@@ -239,11 +241,14 @@ static void runner_miss_init(void) {
     if (f) {
         char line[64];
         while (fgets(line, sizeof(line), f)) {
-            unsigned a;
-            if (sscanf(line, "%x", &a) == 1 && a >= 0x8000 && a < 65536) {
-                uint16_t idx = a >> 3;
-                uint8_t  bit = 1 << (a & 7);
-                miss_map[idx] |= bit;
+            unsigned a = 0;
+            if (sscanf(line, "extra_func = %x", &a) == 1 ||
+                sscanf(line, "%x", &a) == 1) {
+                if (a >= 0x8000 && a < 65536) {
+                    uint16_t idx = a >> 3;
+                    uint8_t  bit = 1 << (a & 7);
+                    miss_map[idx] |= bit;
+                }
             }
         }
         fclose(f);
@@ -309,9 +314,9 @@ static int fm2_load(const char *path) {
     while (fgets(line, sizeof(line), f) && idx < raw) {
         if (line[0] != '|') continue;
         int skip;
-        char p0[16], p1[16];
-        if (sscanf(line, "|%d|%8[^|]|%8[^|]", &skip, p0, p1) < 3)
-            continue;
+        char p0[16] = "", p1[16] = "";
+        int n = sscanf(line, "|%d|%8[^|]|%8[^|]", &skip, p0, p1);
+        if (n < 2) continue;
         uint8_t c0 = fm2_to_nes(p0);
         uint8_t c1 = fm2_to_nes(p1);
         int repeat = skip + 1;
