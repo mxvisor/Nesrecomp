@@ -76,6 +76,32 @@ make recomp ROM=/path/to/game.nes GAME=BattleCity
 
 Run repeatedly — each session builds on the previous `.cfg`. Eventually all reachable code is in the dispatch table.
 
+### Headless Mode
+
+Run without video or audio. The game emulates at full speed, collecting dispatch misses:
+
+```bash
+RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --headless --seconds 30
+```
+
+`RECOMP_LEARN=1` is set automatically in headless mode.
+
+### TAS Playback
+
+Replay an FM2 (FCEUX movie) file to exercise code paths from a full playthrough:
+
+```bash
+RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --playback fm2/game.fm2
+```
+
+Combine with `--headless` for fully automated discovery:
+
+```bash
+GAME=BattleCity ./bin/BattleCity --headless --playback fm2/game.fm2
+```
+
+On each frame (`NMI`) the controller state is loaded from the next FM2 line. The keyboard is ignored during playback. The program exits when all frames are consumed.
+
 ## Project Structure
 
 ```

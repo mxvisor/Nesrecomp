@@ -184,6 +184,58 @@ OPTABLE: Dict[int, Op] = {
     0x8F: Op("SAX","abs",3,4), 0x83: Op("SAX","izx",2,6),
 }
 
+# Fill remaining undocumented 6502 opcodes (57 more) — these are real
+# opcodes executed by the Ricoh 2A03; adding them lets BFS traverse
+# through code that uses them, rather than blocking at those bytes.
+_MORE_UNDOC: Dict[int, Op] = {
+    # -- SLO (ASL memory + ORA) --
+    0x03: Op("SLO","izx",2,8),  0x07: Op("SLO","zp",2,5),
+    0x0F: Op("SLO","abs",3,6),  0x13: Op("SLO","izy",2,8),
+    0x17: Op("SLO","zpx",2,6),  0x1B: Op("SLO","aby",3,7),
+    0x1F: Op("SLO","abx",3,7),
+    # -- RLA (ROL memory + AND) --
+    0x23: Op("RLA","izx",2,8),  0x27: Op("RLA","zp",2,5),
+    0x2F: Op("RLA","abs",3,6),  0x33: Op("RLA","izy",2,8),
+    0x37: Op("RLA","zpx",2,6),  0x3B: Op("RLA","aby",3,7),
+    0x3F: Op("RLA","abx",3,7),
+    # -- SRE (LSR memory + EOR) --
+    0x43: Op("SRE","izx",2,8),  0x47: Op("SRE","zp",2,5),
+    0x4F: Op("SRE","abs",3,6),  0x53: Op("SRE","izy",2,8),
+    0x57: Op("SRE","zpx",2,6),  0x5B: Op("SRE","aby",3,7),
+    0x5F: Op("SRE","abx",3,7),
+    # -- RRA (ROR memory + ADC) --
+    0x63: Op("RRA","izx",2,8),  0x67: Op("RRA","zp",2,5),
+    0x6F: Op("RRA","abs",3,6),  0x73: Op("RRA","izy",2,8),
+    0x77: Op("RRA","zpx",2,6),  0x7B: Op("RRA","aby",3,7),
+    0x7F: Op("RRA","abx",3,7),
+    # -- DCP (DEC memory + CMP) --
+    0xC3: Op("DCP","izx",2,8),  0xC7: Op("DCP","zp",2,5),
+    0xCF: Op("DCP","abs",3,6),  0xD3: Op("DCP","izy",2,8),
+    0xD7: Op("DCP","zpx",2,6),  0xDB: Op("DCP","aby",3,7),
+    0xDF: Op("DCP","abx",3,7),
+    # -- ISB (INC memory + SBC) --
+    0xE3: Op("ISB","izx",2,8),  0xE7: Op("ISB","zp",2,5),
+    0xEF: Op("ISB","abs",3,6),  0xF3: Op("ISB","izy",2,8),
+    0xF7: Op("ISB","zpx",2,6),  0xFB: Op("ISB","aby",3,7),
+    0xFF: Op("ISB","abx",3,7),
+    # -- #imm variants with unique mnemonics --
+    0x0B: Op("ANC","imm",2,2),  0x2B: Op("ANC","imm",2,2),
+    0x4B: Op("ALR","imm",2,2),  0x6B: Op("ARR","imm",2,2),
+    0x8B: Op("XAA","imm",2,2),  0xAB: Op("LAX","imm",2,2),
+    0xCB: Op("SBX","imm",2,2),  0xEB: Op("SBC","imm",2,2),
+    # -- Various undocumented stores/transfers --
+    0x93: Op("AHX","izy",2,6),  0x9B: Op("TAS","aby",3,5),
+    0x9C: Op("SHY","abx",3,5),  0x9E: Op("SHX","aby",3,5),
+    0x9F: Op("AHX","aby",3,5),  0xBB: Op("LAR","aby",3,4),
+    0xB2: Op("LAX","izy",2,5),
+    # -- NOP variants not yet covered --
+    0x12: Op("NOP","zp",2,3),  0x32: Op("NOP","zp",2,3),
+    0x52: Op("NOP","zp",2,3),  0x72: Op("NOP","zp",2,3),
+    0xD2: Op("NOP","zp",2,3),  0xF2: Op("NOP","zp",2,3),
+    0x92: Op("NOP","imp",1,2),
+}
+OPTABLE.update(_MORE_UNDOC)
+
 TERMINATORS = {"RTS", "RTI", "JMP", "BRK"}
 BRANCH_OPS  = {"BCC","BCS","BEQ","BNE","BMI","BPL","BVC","BVS"}
 
@@ -408,13 +460,10 @@ class Disassembler:
             operand |= self.prg_read(pc + 2) << 8
         return op, operand
 
-    def discover(self, seeds: List[int]):
-        visited: Set[int] = set()
+    def _bfs(self, seeds: List[int], visited: Set[int]):
+        """Single BFS pass from seeds. Returns new entries discovered."""
+        new_found = 0
         queue: List[int] = list(seeds)
-        # Add all extra_funcs directly to the queue
-        for ea in self.extra_funcs:
-            if ea not in visited:
-                queue.append(ea)
 
         while queue:
             entry = queue.pop(0)
@@ -455,6 +504,38 @@ class Disassembler:
 
             if insns:
                 self.functions[entry] = insns
+                new_found += 1
+
+        return new_found
+
+    def discover(self, seeds: List[int]):
+        visited: Set[int] = set()
+        all_seeds = list(seeds) + list(self.extra_funcs)
+        self._bfs(all_seeds, visited)
+
+        # Orphan phase: code right after terminators (RTS/RTI/JMP/BRK).
+        # Try up to 3 offset bytes to skip small data gaps between
+        # discovered code and orphan code islands.
+        while True:
+            orphans: List[int] = []
+            for entry, insns in self.functions.items():
+                last_pc, last_op, _ = insns[-1]
+                if last_op.mnemonic in TERMINATORS:
+                    next_pc = last_pc + last_op.size
+                    for off in range(3):
+                        addr = next_pc + off
+                        if addr < 0x8000 or addr >= 0x10000:
+                            break
+                        if addr not in visited:
+                            dec = self.decode_at(addr)
+                            if dec is not None:
+                                orphans.append(addr)
+                                break
+
+            if not orphans:
+                break
+
+            self._bfs(list(set(orphans)), visited)
 
 # ---------------------------------------------------------------------------
 # C Code emitter
