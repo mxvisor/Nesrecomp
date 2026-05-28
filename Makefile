@@ -5,15 +5,37 @@ UNAME_S := $(shell uname -s)
 GAME    ?= stub
 BINDIR  = bin
 OBJDIR  = build
+CROSS   ?=       # set CROSS=1 for Windows cross-compile from Linux
 
 # ============================================================
 #  Platform-specific
 # ============================================================
-ifeq ($(UNAME_S),Linux)
+ifeq ($(CROSS),1)
+
+    TARGET  = $(BINDIR)/$(GAME).exe
+    PYTHON  = python3
+    CC      = i686-w64-mingw32-gcc
+    LDFLAGS = -static-libgcc -lSDL2main -lSDL2 -lmingw32 -lm -lwinpthread -mwindows
+    CFLAGS  = -O2 -Wall -Wextra \
+              -Wno-unused-parameter \
+              -Wno-unused-variable \
+              -Iinclude \
+              -include generated/$(GAME)_embedded_data.h \
+              -I/usr/i686-w64-mingw32/sys-root/mingw/include \
+              -I/usr/i686-w64-mingw32/sys-root/mingw/include/SDL2 \
+              -DSDL_MAIN_HANDLED
+
+else ifeq ($(UNAME_S),Linux)
 
     TARGET  = $(BINDIR)/$(GAME)
     PYTHON  = python3
     LDFLAGS = $(shell sdl2-config --libs) -lm
+    CFLAGS  = -O2 -Wall -Wextra \
+              -Wno-unused-parameter \
+              -Wno-unused-variable \
+              -Iinclude \
+              -include generated/$(GAME)_embedded_data.h \
+              $(shell sdl2-config --cflags)
 
 else
 
@@ -21,15 +43,14 @@ else
     PYTHON  = python
     LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L/mingw64/lib -lSDL2main -lSDL2) \
                -lmingw32 -lm
+    CFLAGS  = -O2 -Wall -Wextra \
+              -Wno-unused-parameter \
+              -Wno-unused-variable \
+              -Iinclude \
+              -include generated/$(GAME)_embedded_data.h \
+              $(shell sdl2-config --cflags)
 
 endif
-
-CFLAGS = -O2 -Wall -Wextra \
-         -Wno-unused-parameter \
-         -Wno-unused-variable \
-         -Iinclude \
-         -include generated/$(GAME)_embedded_data.h \
-         $(shell sdl2-config --cflags)
 
 EMBED_SRC = generated/$(GAME)_embedded_data.c
 EMBED_HDR = generated/$(GAME)_embedded_data.h
