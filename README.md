@@ -1,117 +1,106 @@
-# NESRecomp for MinGW 🎮
+# NESRecomp
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![NESRecomp](https://img.shields.io/badge/Base-NESRecomp%20by%20mstan-blue)](https://github.com/mstan/nesrecomp)
+Static recompilation of NES games to native C code. No interpreter hot loop — every 6502 instruction becomes a C function that yields back to the main loop after each control-flow instruction (JMP, JSR, RTS, RTI, BRK, branches). The interpreter remains only as a fallback for addresses that can't be statically discovered (e.g., indirect JMP targets).
 
-**Static recompilation of NES games to native code without Visual Studio!**
+## How it works
 
-This is a fork of [NESRecomp](https://github.com/mstan/nesrecomp), adapted for building with **MinGW-w64** and **Makefile**.
+1. **Discoverer** (`nesrecomp.py`) — BFS from RESET/NMI/IRQ vectors, follows JSR/JMP abs/branches, groups sequential instructions into functions, emits C code
+2. **Emitter** — each function becomes a `void func_XXXX(void)` that sets `cpu.PC`, adds `g_cpu_cycles`, executes the instruction, and `return`s on any control-flow instruction
+3. **Dispatch table** — `call_by_address(addr)` switch over all discovered function entries; the default case runs one instruction via the interpreter
+4. **Main loop** (`runner.c`) — dispatches one instruction per iteration, then steps PPU (×3) and APU for the accumulated cycles before dispatching the next instruction
+5. **ROM data** is embedded at compile time — no external ROM file needed at runtime
 
-> **All adaptation work was done in dialogue with Claude AI (Anthropic).**
-> The code is completely open source. Doesn't require Visual Studio.
+## Features
 
----
+- **No interpreter hot loop** — every instruction yields to the main loop; PPU/APU stay in sync
+- **No runtime ROM dependency** — PRG/CHR data compiled into the binary
+- **Yield-based control flow** — JMP, JSR, RTS, RTI, BRK, and all branches set `cpu.PC` and `return`
+- **Learning mode** — `RECOMP_LEARN=1` collects dispatch misses into a `.cfg` file for the next recompilation
+- **Universal Makefile** — same Makefile works on Linux and Windows (MinGW), with cross-compile support
+- **Per-game binary** — `GAME=BattleCity` → `bin/BattleCity`
+- **Mapper support** — MMC1, UNROM, CNROM, MMC3 (partial)
+- **Save states** — F5 save, F8 load
+- **Fullscreen** — F11 toggle
+- **Widescreen** — Tab toggle
 
-## ✨ Features
+## Quick Start
 
-- ✅ **Build without Visual Studio** — MinGW-w64, SDL2, and Python only
-- ✅ **Extended mapper support** — MMC1, UNROM, CNROM, MMC3 (partial)
-- ✅ **Portable builds** — one EXE + ROM = a ready-to-play game
-- ✅ **Automatic stubs** — for unrecognized functions
-- ✅ **Simple Makefile** — `mingw32-make GAME=GameName`
-- ✅ **Fullscreen with keyboard F11**
-- ✅ **WIDESCREEN keyboard TAB**
-- ✅ **F5 save game**
-- ✅ **F8 load save game**
-
-
-## Next Features:
-CRT
-turbo mode
-menu UX
-gamepad support
-ADDING mappers
-Fixing mappers and bugs
----
-
-## 🎮 Supported Games
-
-| Game | Mapper | Status |
-|------|--------|--------|
-| Donkey Kong | 0 (NROM) | ✅ Complete |
-| Super Mario Bros. | 0 (NROM) | ✅ Complete |
-| Adventure Island | 3 (CNROM) | ✅ Complete |
-| Castlevania | 2 (UNROM) | ✅ Complete |
-| DuckTales | 2 (UNROM) | ✅ Complete |
-| Mega Man | 2 (UNROM) | ✅ Complete |
-| Dragons of Flame | 1 (MMC1) | ✅ Complete |
-| Mega Man 4 | 4 (MMC3) | ✅ Complete with fixing bug mappers loading level with walking|
-| FElix the cat|        | ✅ Complete |
-
----
-https://github.com/denisfox3554/Nesrecomp/blob/main/linux.png
-
-## 🚀 Quick Start
-
-### Installing Dependencies (One-Time)
+### Linux
 
 ```bash
-# Install MSYS2 from here: https://www.msys2.org/
-# Then in the MSYS2/MinGW64 terminal:
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
-
-git clone https://github.com/denisfox3554/Nesrecomp
-cd nesrecomp-mingw
-
-# Place your ROM in the roms/ folder
-# For example: roms/dk.nes
-
-# Build and run
-mingw32-make recomp ROM=roms/dk.nes GAME=DonkeyKong
-bin/nesrecomp.exe roms/dk.nes
-
-#linux 
-
-Ubuntu/Debian:
-
+# Install dependencies
 sudo apt install build-essential libsdl2-dev python3 make git
 
-Arch:
+# Clone and build
+git clone <url> nesrecomp
+cd nesrecomp
 
-sudo pacman -S base-devel sdl2 python git
+# Copy your ROM, then:
+make recomp ROM=/path/to/game.nes GAME=MyGame
+./bin/MyGame
+```
 
-Fedora:
+### Windows (MinGW)
 
-sudo dnf install gcc SDL2-devel python3 make git
+```bash
+# Install MSYS2 with mingw-w64-x86_64-gcc, SDL2, make, python
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-make recomp ROM=roms/dk.nes GAME=DonkeyKong
+make recomp ROM=/path/to/game.nes GAME=MyGame
+./bin/MyGame.exe
+```
 
-./bin/nesrecomp roms/dk.nes
+### Cross-compile from Linux to Windows
 
+```bash
+sudo apt install gcc-mingw-w64-i686
+make CROSS=1 recomp ROM=roms/game.nes GAME=MyGame
+# produces bin/MyGame.exe (Windows PE)
+```
 
-sudo apt install build-essential libsdl2-dev python3 make git -y
+## Learning Mode
 
-Adding rom
-mkdir -p roms
-cp /mnt/d/path/to/Felix.nes roms/   (for example)
+The static discoverer can't follow indirect jumps (`JMP ($XXXX)`). To find the missing addresses:
 
-GENERATE code
-python3 nesrecomp.py roms/Felix.nes --out generated --game FelixTheCat
+```bash
+RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity
+# Play through the game, then exit with ESC.
+# Adds all dispatch misses to BattleCity.cfg
+```
 
-BUILD GAME: 
-mkdir -p bin
-gcc -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
-    -I. -I/usr/include/SDL2 \
-    memory.c mapper.c ppu.c apu.c cpu_interp.c runner.c \
-    generated/FelixTheCat_full.c \
-    -lSDL2 -lSDL2main -lm \
-    -o bin/nesrecomp
+Then recompile with the new config:
 
-and play game: 
-./bin/nesrecomp roms/Felix.nes
+```bash
+make recomp ROM=/path/to/game.nes GAME=BattleCity
+```
 
+Run repeatedly — each session builds on the previous `.cfg`. Eventually all reachable code is in the dispatch table.
 
-addding for audio install:
-sudo apt install pulseaudio -y
-starting
-pulseaudio --start
+## Project Structure
+
+```
+nesrecomp.py          — static recompiler / discoverer / C emitter
+runner.c / runner.h   — SDL loop, input, audio, save states
+cpu_interp.c          — 6502 interpreter (fallback)
+ppu.c / ppu.h         — PPU 2C02 emulation
+apu.c / apu.h         — APU emulation (pulse, triangle, noise, DMC)
+mapper.c / mapper.h   — mapper logic (MMC1, UNROM, CNROM, MMC3)
+memory.c              — CPU address map, controller I/O
+include/              — refactored headers
+generated/            — per-game recompiled C files + embedded data
+tools/                — extract_nes_data.py (used by Makefile)
+```
+
+## Supported Mappers
+
+| ID  | Name  | Status     |
+|-----|-------|------------|
+| 0   | NROM  | Complete   |
+| 1   | MMC1  | Complete   |
+| 2   | UNROM | Complete   |
+| 3   | CNROM | Complete   |
+| 4   | MMC3  | Partial    |
+
+## License
+
+MIT

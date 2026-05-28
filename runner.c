@@ -181,6 +181,78 @@ void nes_reset(void) {
 }
 
 /* =========================================================================
+   Learning mode — автоматический сбор промахов dispatch
+   ========================================================================= */
+static void runner_miss_write_all(void);
+
+static uint8_t *miss_map = NULL;   /* bitmap 8192 bytes = 65536 bits */
+static char    *miss_path = NULL;
+
+void runner_miss(uint16_t addr) {
+    if (!miss_map) return;  /* learning disabled */
+    if (addr < 0x8000) return;  /* only PRG ROM addresses are valid code */
+    uint16_t idx = addr >> 3;
+    uint8_t  bit = 1 << (addr & 7);
+    if (miss_map[idx] & bit) return;   /* already seen */
+    miss_map[idx] |= bit;
+    /* log immediately (safe if killed mid-game) */
+    FILE *f = fopen(miss_path, "a");
+    if (f) {
+        fprintf(f, "%04X\n", addr);
+        fclose(f);
+    }
+}
+
+static void runner_miss_init(void) {
+    const char *mode = getenv("RECOMP_LEARN");
+    if (!mode || *mode == '0') return;
+    miss_map = calloc(65536 / 8, 1);
+    if (!miss_map) return;
+    const char *game = getenv("GAME");
+    if (!game) game = "game";
+    char path[512];
+    snprintf(path, sizeof(path), "%s.cfg", game);
+    miss_path = strdup(path);
+    if (!miss_path) { free(miss_map); miss_map = NULL; return; }
+    /* load existing misses to avoid duplicates */
+    FILE *f = fopen(miss_path, "r");
+    if (f) {
+        char line[64];
+        while (fgets(line, sizeof(line), f)) {
+            unsigned a;
+            if (sscanf(line, "%x", &a) == 1 && a >= 0x8000 && a < 65536) {
+                uint16_t idx = a >> 3;
+                uint8_t  bit = 1 << (a & 7);
+                miss_map[idx] |= bit;
+            }
+        }
+        fclose(f);
+    }
+    fprintf(stderr, "[learn] logging miss addresses to %s\n", miss_path);
+}
+
+static void runner_miss_write_all(void) {
+    if (!miss_map || !miss_path) return;
+    /* build sorted list */
+    uint16_t addrs[65536];
+    int n = 0;
+    for (uint32_t a = 0x8000; a < 65536; a++) {
+        uint16_t idx = a >> 3;
+        uint8_t  bit = 1 << (a & 7);
+        if (miss_map[idx] & bit)
+            addrs[n++] = (uint16_t)a;
+    }
+    if (n == 0) return;
+    FILE *f = fopen(miss_path, "w");
+    if (!f) return;
+    fprintf(f, "# Auto-generated miss addresses (%d total)\n", n);
+    for (int i = 0; i < n; i++)
+        fprintf(f, "extra_func = %04X\n", addrs[i]);
+    fclose(f);
+    fprintf(stderr, "[learn] wrote %d addresses to %s\n", n, miss_path);
+}
+
+/* =========================================================================
    runner_init
    ========================================================================= */
 int runner_init(const char *title, const char *rom_path) {
@@ -258,6 +330,8 @@ int runner_init(const char *title, const char *rom_path) {
             ((uint16_t)mem_read(0xFFFD) << 8);
 
     fps_timer = SDL_GetTicks();
+
+    runner_miss_init();
 
     return 1;
 }
@@ -356,16 +430,18 @@ void runner_run(void) {
                     ((uint16_t)mem_read(0xFFFF) << 8);
         }
 
-        int cyc = cpu_interp_step();
+        call_by_address(cpu.PC);
 
-        if (cyc <= 0)
-            cyc = 1;
+        if (g_cpu_cycles == 0)
+            g_cpu_cycles = 1;
 
-        for (int c = 0; c < cyc; c++)
+        for (uint32_t c = 0; c < g_cpu_cycles; c++)
             apu_step();
 
-        for (int c = 0; c < cyc * 3; c++)
+        for (uint32_t c = 0; c < g_cpu_cycles * 3; c++)
             ppu_step();
+
+        g_cpu_cycles = 0;
 
         if (ppu.scanline == 241 &&
             last_frame_scanline != 241) {
@@ -442,6 +518,11 @@ void runner_run(void) {
    runner_quit
    ========================================================================= */
 void runner_quit(void) {
+
+    runner_miss_write_all();
+    free(miss_map);
+    free(miss_path);
+    miss_map = NULL;
 
     if (audio_dev)
         SDL_CloseAudioDevice(audio_dev);

@@ -8,6 +8,7 @@ uint8_t  ram[RAM_SIZE];
 uint8_t  sram[SRAM_SIZE];
 uint8_t  prg_rom[PRG_ROM_MAX];
 uint32_t prg_rom_size = 0;
+uint32_t g_cpu_cycles = 0;
 
 uint8_t controller[2]  = {0, 0};
 uint8_t ctrl_shift[2]  = {0, 0};

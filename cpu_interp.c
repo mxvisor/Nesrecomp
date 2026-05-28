@@ -310,6 +310,7 @@ int cpu_interp_step(void) {
     }
 
     (void)t16; /* suppress unused warning */
+    g_cpu_cycles += cycles;
     return cycles;
 }
 

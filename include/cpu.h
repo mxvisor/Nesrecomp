@@ -42,6 +42,9 @@ static inline void set_P(uint8_t p) {
     cpu.C =  p       & 1;
 }
 
+/* Cycle counter (накопленные CPU циклы между вызовами PPU/APU) */
+extern uint32_t g_cpu_cycles;
+
 /*
  * Interpreter — cpu_interp.c
  * cpu_interp_step(): выполняет одну инструкцию, возвращает кол-во циклов

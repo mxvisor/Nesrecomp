@@ -206,9 +206,19 @@ void runner_run(void);
 void runner_quit(void);
 
 /* =========================================================================
+   Cycle counter (used by recompiled code and interpreter)
+   ========================================================================= */
+extern uint32_t g_cpu_cycles;
+
+/* =========================================================================
    6502 Interpreter
    ========================================================================= */
 int  cpu_interp_step(void);
 void cpu_interp_run(uint16_t entry);
+
+/* =========================================================================
+   Learning mode — collect dispatch misses into .cfg
+   ========================================================================= */
+void runner_miss(uint16_t addr);
 
 #endif

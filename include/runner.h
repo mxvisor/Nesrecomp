@@ -35,6 +35,9 @@
 #include "mapper.h"
 #include "interrupts.h"
 
+/* Dispatch miss learning */
+void runner_miss(uint16_t addr);
+
 /* Runner lifecycle */
 int  runner_init(const char *title, const char *rom_path);
 void runner_run(void);

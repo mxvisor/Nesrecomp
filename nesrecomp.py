@@ -324,23 +324,34 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
     elif mn == "SED": lines += ["cpu.D = 1;"]
     elif mn == "CLV": lines += ["cpu.V = 0;"]
     elif mn == "NOP": lines += ["/* NOP */"]
-    elif mn == "BRK": lines += ["cpu_brk();"]
+    elif mn == "BRK":
+        lines += ["cpu.PC++;",
+                   "stack_push((cpu.PC >> 8) & 0xFF);",
+                   "stack_push(cpu.PC & 0xFF);",
+                   "stack_push(get_P() | 0x10);",
+                   "cpu.I = 1;",
+                   "cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);",
+                   "return;"]
     elif mn == "JSR":
         tgt = operand & 0xFFFF
-        lines += [f"func_{tgt:04X}();"]
+        # Push return_addr-1 = (pc+3)-1 = pc+2 (high byte first)
+        lines += [f"stack_push(((uint16_t)(0x{pc:04X} + 2) >> 8) & 0xFF);",
+                   f"stack_push(((uint16_t)(0x{pc:04X} + 2)      ) & 0xFF);",
+                   f"cpu.PC = 0x{tgt:04X};",
+                   "return;"]
     elif mn == "JMP":
         if m == "abs":
             tgt = operand & 0xFFFF
-            if tgt in labels:
-                lines += [f"goto lbl_{tgt:04X};"]
-            else:
-                lines += [f"func_{tgt:04X}(); return;"]
+            lines += [f"cpu.PC = 0x{tgt:04X};", "return;"]
         else:  # indirect — runtime dispatch
-            lines += [f"call_by_address(ind_addr(0x{operand:04X}));", "return;"]
+            lines += [f"cpu.PC = ind_addr(0x{operand:04X});", "return;"]
     elif mn == "RTS":
-        lines += ["return;"]
+        lines += ["{ uint16_t _ra = stack_pop(); _ra |= (uint16_t)stack_pop() << 8; cpu.PC = _ra + 1; }",
+                   "return;"]
     elif mn == "RTI":
-        lines += ["set_P(stack_pop());", "return; /* RTI */"]
+        lines += ["set_P(stack_pop());",
+                   "{ uint16_t _ra = stack_pop(); _ra |= (uint16_t)stack_pop() << 8; cpu.PC = _ra; }",
+                   "return;"]
     elif mn in BRANCH_OPS:
         tgt = branch_target(pc, operand)
         cond = {
@@ -349,11 +360,7 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
             "BMI": "cpu.N",  "BPL": "!cpu.N",
             "BVC": "!cpu.V", "BVS": "cpu.V",
         }[mn]
-        if tgt in labels:
-            lines += [f"if ({cond}) goto lbl_{tgt:04X};"]
-        else:
-            # branch crosses function boundary (rare but possible)
-            lines += [f"if ({cond}) {{ func_{tgt:04X}(); return; }}"]
+        lines += [f"if ({cond}) {{ cpu.PC = 0x{tgt:04X}; return; }}"]
     else:
         lines += [f"/* UNHANDLED {mn} */"]
     return lines
@@ -425,9 +432,12 @@ class Disassembler:
                     tgt = operand & 0xFFFF
                     if tgt not in visited:
                         queue.append(tgt)
+                    # JSR return address = pc+3 → RTS will return here
+                    ret = pc + 3
+                    if ret not in visited:
+                        queue.append(ret)
                 elif op.mnemonic == "JMP" and op.mode == "abs":
                     tgt = operand & 0xFFFF
-                    # If target is within same function body → not a new func
                     if tgt not in visited:
                         queue.append(tgt)
                 elif op.mnemonic in BRANCH_OPS:
@@ -492,18 +502,15 @@ class CEmitter:
         # Function bodies
         for entry in sorted(self.dis.functions):
             insns  = self.dis.functions[entry]
-            labels = self._collect_labels(entry)
-            # Labels that are branch targets within this function
-            internal = labels & {pc for pc, _, _ in insns}
 
             lines.append(f'void func_{entry:04X}(void) {{')
             for pc, op, operand in insns:
-                if pc in internal:
-                    lines.append(f'  lbl_{pc:04X}:;')
                 comment = f'  /* ${pc:04X}  {op.mnemonic} */'
-                stmts = emit_instruction(op, operand, pc, internal)
+                lines.append(f'  cpu.PC = 0x{pc:04X};')
+                stmts = emit_instruction(op, operand, pc, set())
                 if stmts:
                     lines.append(comment)
+                    lines.append(f'  g_cpu_cycles += {op.cycles};')
                     for s in stmts:
                         lines.append(f'  {s}')
             lines.append('}')
@@ -532,8 +539,9 @@ class CEmitter:
         for entry in sorted(known):
             lines.append(f'    case 0x{entry:04X}: func_{entry:04X}(); return;')
         lines.append('    default:')
-        lines.append('      fprintf(stderr, "[nesrecomp] Unknown dispatch $%04X\\n", addr);')
-        lines.append('      break;')
+        lines.append('      runner_miss(addr);')
+        lines.append('      cpu_interp_step();')
+        lines.append('      return;')
         lines.append('  }')
         lines.append('}')
         lines.append('')
