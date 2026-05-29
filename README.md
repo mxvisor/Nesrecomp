@@ -35,10 +35,18 @@ sudo apt install build-essential libsdl2-dev python3 make git
 git clone <url> nesrecomp
 cd nesrecomp
 
-# Copy your ROM, then:
-make recomp ROM=/path/to/game.nes GAME=MyGame
+# Place your ROM in roms/MyGame.nes, then:
+make recomp GAME=MyGame
 ./bin/MyGame
 ```
+
+`ROM` defaults to `roms/$(GAME).nes`. If your ROM is elsewhere, pass it explicitly:
+
+```bash
+make recomp GAME=MyGame ROM=/path/to/game.nes
+```
+
+If `asm/MyGame.asm` exists it is picked up automatically. The config `cfg/MyGame.cfg` is always used if present.
 
 ### Windows (MinGW)
 
@@ -46,7 +54,7 @@ make recomp ROM=/path/to/game.nes GAME=MyGame
 # Install MSYS2 with mingw-w64-x86_64-gcc, SDL2, make, python
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-make recomp ROM=/path/to/game.nes GAME=MyGame
+make recomp GAME=MyGame
 ./bin/MyGame.exe
 ```
 
@@ -54,7 +62,7 @@ make recomp ROM=/path/to/game.nes GAME=MyGame
 
 ```bash
 sudo apt install gcc-mingw-w64-i686
-make CROSS=1 recomp ROM=roms/game.nes GAME=MyGame
+make CROSS=1 recomp GAME=MyGame
 # produces bin/MyGame.exe (Windows PE)
 ```
 
@@ -63,25 +71,25 @@ make CROSS=1 recomp ROM=roms/game.nes GAME=MyGame
 The static discoverer can't follow indirect jumps (`JMP ($XXXX)`). To find the missing addresses:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame
 # Play through the game, then exit with ESC.
-# Adds all dispatch misses to BattleCity.cfg
+# Dispatch misses are saved automatically to cfg/MyGame.cfg
 ```
 
-Then recompile with the new config:
+Then recompile — the config is picked up automatically:
 
 ```bash
-make recomp ROM=/path/to/game.nes GAME=BattleCity
+make recomp GAME=MyGame
 ```
 
-Run repeatedly — each session builds on the previous `.cfg`. Eventually all reachable code is in the dispatch table.
+Run repeatedly — each session builds on the previous `cfg/MyGame.cfg`. Eventually all reachable code is in the dispatch table.
 
 ### Headless Mode
 
 Run without video or audio. The game emulates at full speed, collecting dispatch misses:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --headless --seconds 30
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame --headless --seconds 30
 ```
 
 `RECOMP_LEARN=1` is set automatically in headless mode.
@@ -91,13 +99,13 @@ RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --headless --seconds 30
 Replay an FM2 (FCEUX movie) file to exercise code paths from a full playthrough:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --playback fm2/game.fm2
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame --playback fm2/MyGame.fm2
 ```
 
 Combine with `--headless` for fully automated discovery:
 
 ```bash
-GAME=BattleCity ./bin/BattleCity --headless --playback fm2/game.fm2
+GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 ```
 
 On each frame (`NMI`) the controller state is loaded from the next FM2 line. The keyboard is ignored during playback. The program exits when all frames are consumed.

@@ -35,10 +35,18 @@ sudo apt install build-essential libsdl2-dev python3 make git
 git clone <url> nesrecomp
 cd nesrecomp
 
-# Скопировать ROM, затем:
-make recomp ROM=/path/to/game.nes GAME=MyGame
+# Положить ROM в roms/MyGame.nes, затем:
+make recomp GAME=MyGame
 ./bin/MyGame
 ```
+
+`ROM` по умолчанию равен `roms/$(GAME).nes`. Если ROM находится в другом месте, передайте его явно:
+
+```bash
+make recomp GAME=MyGame ROM=/path/to/game.nes
+```
+
+Если существует файл `asm/MyGame.asm` — он подхватывается автоматически. Конфиг `cfg/MyGame.cfg` всегда используется, если присутствует.
 
 ### Windows (MinGW)
 
@@ -46,7 +54,7 @@ make recomp ROM=/path/to/game.nes GAME=MyGame
 # Установить MSYS2 с mingw-w64-x86_64-gcc, SDL2, make, python
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-make recomp ROM=/path/to/game.nes GAME=MyGame
+make recomp GAME=MyGame
 ./bin/MyGame.exe
 ```
 
@@ -54,7 +62,7 @@ make recomp ROM=/path/to/game.nes GAME=MyGame
 
 ```bash
 sudo apt install gcc-mingw-w64-i686
-make CROSS=1 recomp ROM=roms/game.nes GAME=MyGame
+make CROSS=1 recomp GAME=MyGame
 # создаёт bin/MyGame.exe (Windows PE)
 ```
 
@@ -63,25 +71,25 @@ make CROSS=1 recomp ROM=roms/game.nes GAME=MyGame
 Статический discoverer не может следовать косвенным переходам (`JMP ($XXXX)`). Чтобы найти недостающие адреса:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame
 # Играть в игру, затем выйти по ESC.
-# Все промахи диспетчеризации добавляются в BattleCity.cfg
+# Промахи диспетчеризации автоматически сохраняются в cfg/MyGame.cfg
 ```
 
-Затем перекомпилировать с новым конфигом:
+Затем перекомпилировать — конфиг подхватывается автоматически:
 
 ```bash
-make recomp ROM=/path/to/game.nes GAME=BattleCity
+make recomp GAME=MyGame
 ```
 
-Запускать повторно — каждая сессия дополняет предыдущий `.cfg`. В итоге весь достижимый код попадёт в таблицу диспетчеризации.
+Запускать повторно — каждая сессия дополняет предыдущий `cfg/MyGame.cfg`. В итоге весь достижимый код попадёт в таблицу диспетчеризации.
 
 ### Режим без интерфейса (Headless)
 
 Запуск без видео и звука. Игра эмулируется на полной скорости, собирая промахи диспетчеризации:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --headless --seconds 30
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame --headless --seconds 30
 ```
 
 `RECOMP_LEARN=1` устанавливается автоматически в headless-режиме.
@@ -91,13 +99,13 @@ RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --headless --seconds 30
 Воспроизвести FM2-файл (запись FCEUX) для обхода кодовых путей полного прохождения:
 
 ```bash
-RECOMP_LEARN=1 GAME=BattleCity ./bin/BattleCity --playback fm2/game.fm2
+RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame --playback fm2/MyGame.fm2
 ```
 
 Совместить с `--headless` для полностью автоматического обнаружения:
 
 ```bash
-GAME=BattleCity ./bin/BattleCity --headless --playback fm2/game.fm2
+GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 ```
 
 На каждом кадре (`NMI`) состояние контроллера загружается из следующей строки FM2. Клавиатура игнорируется во время воспроизведения. Программа завершается, когда все кадры исчерпаны.

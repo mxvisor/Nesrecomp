@@ -128,16 +128,21 @@ dirs:
 gen_embed:
 	$(PYTHON) tools/extract_nes_data.py $(ROM) --game $(GAME) --out generated
 
+
 # Recompile ROM, then build
+# Usage: make recomp GAME=NesGame
+#   ROM     — optional, defaults to roms/$(GAME).nes
+#   ASM     — optional, defaults to asm/$(GAME).asm if that file exists
+#   CFG     — always cfg/$(GAME).cfg
+ROM     ?= roms/$(GAME).nes
+ASM_FLAG = $(if $(ASM),--asm asm/$(ASM),$(if $(wildcard asm/$(GAME).asm),--asm asm/$(GAME).asm))
+
 recomp:
-ifndef ROM
-	$(error ROM not set)
-endif
 ifndef GAME
-	$(error GAME not set)
+	$(error GAME not set. Usage: make recomp GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(if $(ASM),--asm asm/$(ASM))
+	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG)
 	$(MAKE) GAME=$(GAME)
 
 # Clean
