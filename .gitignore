@@ -5,6 +5,7 @@ roms/
 cfg/
 asm/
 fm2/
+docs/
 *.png
 *.ppm
 *.log
