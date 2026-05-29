@@ -184,8 +184,8 @@ static int widescreen = 0;
 static int fps_counter = 0;
 static Uint32 fps_timer = 0;
 
-static volatile int g_nmi_pending = 0;
-static volatile int g_irq_pending = 0;
+volatile int g_nmi_pending = 0;
+volatile int g_irq_pending = 0;
 
 void nes_nmi(void) {
     g_nmi_pending = 1;

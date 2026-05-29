@@ -434,9 +434,24 @@ class Disassembler:
         self.data_regions: Set[range] = set()
 
     def prg_read(self, addr: int) -> int:
-        """Simplified mapper 0/1/4 read at CPU address."""
+        """Simplified mapper read at CPU address."""
         if addr < 0x8000:
             return 0xFF
+        # MMC3: 8KB bank granularity with two switchable slots and two fixed slots
+        if self.mapper == 4:
+            if addr >= 0xE000:
+                bank_8k = self.prg_banks * 2 - 1
+                offset = bank_8k * 0x2000 + (addr - 0xE000)
+            elif addr >= 0xC000:
+                bank_8k = self.prg_banks * 2 - 2
+                offset = bank_8k * 0x2000 + (addr - 0xC000)
+            elif addr >= 0xA000:
+                bank_8k = self.prg_banks * 2 - 1
+                offset = bank_8k * 0x2000 + (addr - 0xA000)
+            else:
+                bank_8k = self.prg_banks * 2 - 2
+                offset = bank_8k * 0x2000 + (addr - 0x8000)
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
         offset = addr - 0x8000
         # If 1 bank (16KB), mirror
         if self.prg_banks == 1:
@@ -444,6 +459,10 @@ class Disassembler:
         elif offset >= len(self.prg):
             offset = offset % len(self.prg)
         return self.prg[offset] if offset < len(self.prg) else 0xFF
+
+    def is_switchable(self, addr: int) -> bool:
+        """For MMC3: $8000-$BFFF can switch banks at runtime."""
+        return self.mapper == 4 and 0x8000 <= addr < 0xC000
 
     def read_vector(self, addr: int) -> int:
         lo = self.prg_read(addr)
@@ -462,20 +481,25 @@ class Disassembler:
             operand |= self.prg_read(pc + 2) << 8
         return op, operand
 
-    def _bfs(self, seeds: List[int], visited: Set[int]):
+    def _bfs(self, seeds: List[int], visited: Set[int], max_func: int = 15000):
         """Single BFS pass from seeds. Returns new entries discovered."""
         new_found = 0
         queue: List[int] = list(seeds)
 
-        while queue:
+        while queue and new_found < max_func:
             entry = queue.pop(0)
             if entry in visited or entry < 0x8000:
+                continue
+            # MMC3: skip switchable banks — handled by interpreter at runtime
+            if self.is_switchable(entry):
                 continue
             visited.add(entry)
 
             insns: List[Tuple[int, Op, int]] = []
             pc = entry
-            while True:
+            steps = 0
+            while steps < 512:
+                steps += 1
                 dec = self.decode_at(pc)
                 if dec is None:
                     break
@@ -485,19 +509,19 @@ class Disassembler:
                 # Follow JSR/JMP abs
                 if op.mnemonic == "JSR":
                     tgt = operand & 0xFFFF
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
                     # JSR return address = pc+3 → RTS will return here
                     ret = pc + 3
-                    if ret not in visited:
+                    if ret not in visited and not self.is_switchable(ret):
                         queue.append(ret)
                 elif op.mnemonic == "JMP" and op.mode == "abs":
                     tgt = operand & 0xFFFF
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
                 elif op.mnemonic in BRANCH_OPS:
                     tgt = branch_target(pc, operand)
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
 
                 if op.mnemonic in TERMINATORS:
@@ -508,11 +532,15 @@ class Disassembler:
                 self.functions[entry] = insns
                 new_found += 1
 
+        if new_found >= max_func:
+            print(f"[nesrecomp] BFS hit limit ({max_func} functions)")
+
         return new_found
 
     def discover(self, seeds: List[int]):
         visited: Set[int] = set()
-        all_seeds = list(seeds) + list(self.extra_funcs)
+        # MMC3: filter out switchable-bank addresses from seeds
+        all_seeds = [s for s in (list(seeds) + list(self.extra_funcs)) if not self.is_switchable(s)]
         self._bfs(all_seeds, visited)
 
         # Orphan phase: code right after terminators (RTS/RTI/JMP/BRK).
@@ -526,7 +554,7 @@ class Disassembler:
                     next_pc = last_pc + last_op.size
                     for off in range(3):
                         addr = next_pc + off
-                        if addr < 0x8000 or addr >= 0x10000:
+                        if addr < 0x8000 or addr >= 0x10000 or self.is_switchable(addr):
                             break
                         if addr not in visited:
                             dec = self.decode_at(addr)

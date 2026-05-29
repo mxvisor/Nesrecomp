@@ -4,7 +4,7 @@ UNAME_S := $(shell uname -s)
 
 GAME    ?= stub
 BINDIR  = bin
-OBJDIR  = build
+OBJDIR  = build/$(GAME)
 CROSS   ?=       # set CROSS=1 for Windows cross-compile from Linux
 
 # ============================================================
@@ -137,7 +137,7 @@ ifndef GAME
 	$(error GAME not set)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(if $(ASM),--asm $(ASM))
+	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(if $(ASM),--asm asm/$(ASM))
 	$(MAKE) GAME=$(GAME)
 
 # Clean

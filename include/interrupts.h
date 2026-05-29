@@ -19,6 +19,10 @@ void nes_nmi(void);    /* Non-Maskable Interrupt — VBlank */
 void nes_irq(void);    /* Maskable IRQ — mapper, APU frame */
 void nes_reset(void);  /* Сброс — читает вектор $FFFC */
 
+/* Флаги прерываний — проверяются в основном цикле и в cpu_interp_run() */
+extern volatile int g_nmi_pending;
+extern volatile int g_irq_pending;
+
 /* dispatch таблица из сгенерированного кода (или stub) */
 void call_by_address(uint16_t addr);
 

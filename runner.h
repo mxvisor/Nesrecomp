@@ -70,6 +70,12 @@ static inline uint8_t stack_pop(void) {
 }
 
 /* =========================================================================
+   Interrupt flags (set by nes_nmi/nes_irq, checked by main loop + interpreter)
+   ========================================================================= */
+extern volatile int g_nmi_pending;
+extern volatile int g_irq_pending;
+
+/* =========================================================================
    Interrupt / dispatch
    ========================================================================= */
 void call_by_address(uint16_t addr);
