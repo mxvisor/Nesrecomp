@@ -1,18 +1,17 @@
 # AGENTS.md — NESRecomp Project Guide for AI Agents
 
-## conventions
+## Conventions
 
 - **Commit messages**: always in English
 - **Code comments**: always in English
 - **AGENTS.md / README**: English
+- **Commits**: never commit without explicit user confirmation
 
 ---
 
 ## Project Overview
 
 NESRecomp is a **static recompiler for NES ROM files**. It converts 6502 machine code into native C functions, then compiles them into a standalone executable. Unknown code paths fall back to a cycle-accurate 6502 interpreter. The result is a per-game binary with the ROM data embedded — no external ROM file needed at runtime.
-
-Supported games: **Battle City, Captain America, Contra Force, Felix the Cat, Super Mario Bros, Super C** (и другие — добавляются через `make recomp`).
 
 ---
 
@@ -24,9 +23,9 @@ ROM file
 nesrecomp.py          — BFS static disassembler → emits C
    ↓
 generated/
-  GAME_full.c         — one void func_XXXX(void) per discovered block
-  GAME_dispatch.c     — call_by_address(addr): switch → func or interpreter
-  GAME_embedded_data.h/.c — PRG/CHR ROM compiled into binary
+  NesGame_full.c         — one void func_XXXX(void) per discovered block
+  NesGame_dispatch.c     — call_by_address(addr): switch → func or interpreter
+  NesGame_embedded_data.h/.c — PRG/CHR ROM compiled into binary
    ↓
 Compiled binary (runner.c main loop drives execution)
 ```
@@ -57,10 +56,10 @@ Every recompiled function ends with `return` after each control-flow instruction
 | `apu.c / apu.h` | APU: pulse ×2, triangle, noise, DMC, audio buffering |
 | `mapper.c / mapper.h` | Bank switching: NROM(0), MMC1(1), UNROM(2), CNROM(3), MMC3(4), AxROM(7) |
 | `include/interrupts.h` | NMI/IRQ pending flags and vector logic |
-| `cfg/GAME.cfg` | Manually/learning-discovered extra entry points |
-| `roms/GAME.nes` | NES ROM файлы (не в git — локальные копии) |
-| `asm/GAME.s` | Optional ca65 assembly for label-based discovery (не в git) |
-| `fm2/GAME.fm2` | Optional FCEUX TAS file for playback-based discovery (не в git) |
+| `cfg/NesGame.cfg` | Manually/learning-discovered extra entry points |
+| `roms/NesGame.nes` | NES ROM files (not in git — local copies) |
+| `asm/NesGame.s` | Optional ca65 assembly for label-based discovery (not in git) |
+| `fm2/NesGame.fm2` | Optional FCEUX TAS file for playback-based discovery (not in git) |
 | `tools/extract_nes_data.py` | ROM parser → embedded data header/source |
 | `generated/` | Auto-generated files — do not edit manually |
 
@@ -86,7 +85,7 @@ After BFS, a second pass scans for orphan code islands (up to 3-byte gaps after 
 
 ### Config Seeds
 
-`cfg/GAME.cfg` can add extra seeds:
+`cfg/NesGame.cfg` can add extra seeds:
 ```
 extra_func = 8120
 extra_func = 81A5
@@ -97,7 +96,7 @@ These come from learning mode or manual analysis.
 ### Emitted Code Pattern
 
 ```c
-// GAME_full.c
+// NesGame_full.c
 void func_8000(void) {
     cpu.PC = 0x8000;
     /* $8000 LDA #$42 */
@@ -110,7 +109,7 @@ void func_8000(void) {
     return;  // yield
 }
 
-// GAME_dispatch.c
+// NesGame_dispatch.c
 void call_by_address(uint16_t addr) {
     switch (addr) {
         case 0x8000: func_8000(); return;
@@ -144,58 +143,50 @@ Two strategies, selected per mapper:
 
 ```bash
 # Run headless and log missed addresses
-RECOMP_LEARN=1 ./bin/BattleCity --headless --seconds 30
+RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
 
-# Recompile with discovered addresses written to cfg/BattleCity.cfg
-make recomp ROM=/path/to/BattleCity.nes GAME=BattleCity
+# Recompile with discovered addresses written to cfg/NesGame.cfg
+make recomp ROM=roms/NesGame.nes GAME=NesGame
 ```
 
 Repeat until no new misses. FM2 TAS files help cover more code paths:
 
 ```bash
-./bin/BattleCity --playback fm2/BattleCity.fm2 --headless
+./bin/NesGame --playback fm2/NesGame.fm2 --headless
 ```
 
 ---
 
-## Local Asset Directories (не в git)
+## Local Asset Directories (not in git)
 
-Три папки не отслеживаются git — это намеренно (ROM файлы защищены авторским правом, TAS и ASM файлы — рабочие материалы):
+Three directories are not tracked by git — intentionally (ROM files are copyrighted; TAS and ASM files are working materials):
 
 ### `roms/`
 
-NES ROM файлы для каждой игры. Текущий набор:
-
-| Файл | Игра | Маппер |
-|------|------|--------|
-| `Battle.nes` | Battle City | MMC1 (1) |
-| `Captain.nes` | Captain America and The Avengers | — |
-| `Contraf.nes` | Contra Force | — |
-| `Felix.nes` | Felix the Cat | MMC3 (4) |
-| `Mario.nes` | Super Mario Bros | NROM (0) |
-| `Superc.nes` | Super C | — |
-
-Путь к ROM передаётся в `make recomp ROM=roms/GAME.nes GAME=GAME`.
+NES ROM files. Pass the path via:
+```bash
+make recomp ROM=roms/NesGame.nes GAME=NesGame
+```
 
 ### `fm2/`
 
-FCEUX TAS movie файлы для каждой игры. Используются для learning mode — запускают игру по записанным входам, покрывая больше кода чем ручная игра. Текущий набор: `Battle.fm2`, `Captain.fm2`, `Contraf.fm2`, `Felix.fm2`, `Mario.fm2`, `Superc.fm2`.
+FCEUX TAS movie files. Used in learning mode — replay recorded inputs to cover more code than manual play.
 
 ```bash
-./bin/Felix --playback fm2/Felix.fm2 --headless
+./bin/NesGame --playback fm2/NesGame.fm2 --headless
 ```
 
-Формат: FCEUX FM2 (текстовый). Каждая строка `|skip|P1|P2|` описывает один кадр. Парсер в `runner.c → fm2_load()`.
+Format: FCEUX FM2 (text). Each line `|skip|P1|P2|` describes one frame. Parser: `runner.c → fm2_load()`.
 
 ### `asm/`
 
-ca65 assembly файлы с метками для конкретных игр. Используются при рекомпиляции (`--asm`) чтобы дать несреkomp.py имена функций и дополнительные точки входа из ручного дизассемблирования. Текущий набор: `Battle.asm` (только для Battle City).
+ca65 assembly files with labels for specific games. Used during recompilation (`--asm`) to give `nesrecomp.py` function names and extra entry points from manual disassembly.
 
 ```bash
-make recomp ROM=roms/Battle.nes GAME=Battle ASM=Battle.asm
+make recomp ROM=roms/NesGame.nes GAME=NesGame ASM=NesGame.asm
 ```
 
-При передаче через `ASM=` Makefile автоматически добавляет префикс `asm/`, так что указывать нужно только имя файла без пути.
+When passed via `ASM=`, the Makefile automatically prepends the `asm/` prefix — specify only the filename without path.
 
 ---
 
@@ -203,19 +194,19 @@ make recomp ROM=roms/Battle.nes GAME=Battle ASM=Battle.asm
 
 ```bash
 # Full recompile (ROM → generated C → binary)
-make recomp ROM=/path/to/BattleCity.nes GAME=BattleCity
+make recomp ROM=roms/NesGame.nes GAME=NesGame
 
 # Recompile C only (after editing source, no ROM re-disassembly)
-make GAME=BattleCity
+make GAME=NesGame
 
 # Cross-compile for Windows
-make CROSS=1 GAME=BattleCity
+make CROSS=1 GAME=NesGame
 
 # With ca65 assembly labels
-make recomp ROM=... GAME=BattleCity ASM=asm/BattleCity.s
+make recomp ROM=roms/NesGame.nes GAME=NesGame ASM=NesGame.asm
 ```
 
-Output: `bin/BattleCity` (Linux) or `bin/BattleCity.exe` (Windows).
+Output: `bin/NesGame` (Linux) or `bin/NesGame.exe` (Windows).
 
 ---
 
@@ -291,7 +282,7 @@ Edit `cpu_interp.c`. All opcodes follow the same pattern: decode addressing mode
 Edit `nesrecomp.py` in the instruction emission section. Match the C pattern used in `cpu_interp.c`.
 
 ### Debugging a dispatch miss
-Enable `RECOMP_LEARN=1`, run headless, check the generated `cfg/GAME.cfg` for new addresses. Re-run `make recomp`.
+Enable `RECOMP_LEARN=1`, run headless, check the generated `cfg/NesGame.cfg` for new addresses. Re-run `make recomp`.
 
 ### Investigating cycle accuracy
 Every instruction must: (a) increment `g_cpu_cycles` by the correct cycle count, (b) return from the recompiled function (or step from interpreter) so the main loop can step PPU/APU.
