@@ -221,21 +221,24 @@ static int sweep_muted(int ch) {
 static void clock_sweep(int ch) {
     uint16_t target = sweep_target(ch);
 
-    /* Clock divider */
+    /* Per wiki: step 1 — update period if counter==0 (checked BEFORE reload resets it).
+       step 2 — reset counter if counter==0 OR reload flag set. */
+    int do_update = (apu.pulse[ch].sweep_divider == 0) &&
+                    apu.pulse[ch].sweep_en &&
+                    apu.pulse[ch].sweep_shift > 0 &&
+                    !sweep_muted(ch);
+
     if (apu.pulse[ch].sweep_reload) {
-        apu.pulse[ch].sweep_reload   = 0;
-        apu.pulse[ch].sweep_divider  = apu.pulse[ch].sweep_period;
+        apu.pulse[ch].sweep_divider = apu.pulse[ch].sweep_period;
+        apu.pulse[ch].sweep_reload  = 0;
     } else if (apu.pulse[ch].sweep_divider == 0) {
-        apu.pulse[ch].sweep_divider  = apu.pulse[ch].sweep_period;
-        /* Update period if enabled, shift > 0, and not muting */
-        if (apu.pulse[ch].sweep_en &&
-            apu.pulse[ch].sweep_shift > 0 &&
-            !sweep_muted(ch)) {
-            apu.pulse[ch].timer_reload = target;
-        }
+        apu.pulse[ch].sweep_divider = apu.pulse[ch].sweep_period;
     } else {
         apu.pulse[ch].sweep_divider--;
     }
+
+    if (do_update)
+        apu.pulse[ch].timer_reload = target;
 }
 
 /* =========================================================================
