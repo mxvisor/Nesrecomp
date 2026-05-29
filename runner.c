@@ -233,7 +233,11 @@ static void runner_miss_init(void) {
     const char *game = getenv("GAME");
     if (!game) game = "game";
     char path[512];
+#ifdef _WIN32
+    mkdir("cfg");
+#else
     mkdir("cfg", 0755);
+#endif
     snprintf(path, sizeof(path), "cfg/%s.cfg", game);
     miss_path = strdup(path);
     if (!miss_path) { free(miss_map); miss_map = NULL; return; }

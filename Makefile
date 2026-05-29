@@ -4,7 +4,6 @@ UNAME_S := $(shell uname -s)
 
 GAME    ?= stub
 BINDIR  = bin
-OBJDIR  = build/$(GAME)
 CROSS   ?=       # set CROSS=1 for Windows cross-compile from Linux
 
 # ============================================================
@@ -12,6 +11,7 @@ CROSS   ?=       # set CROSS=1 for Windows cross-compile from Linux
 # ============================================================
 ifeq ($(CROSS),1)
 
+    PLATFORM = win32
     TARGET  = $(BINDIR)/$(GAME).exe
     PYTHON  = python3
     CC      = i686-w64-mingw32-gcc
@@ -27,6 +27,7 @@ ifeq ($(CROSS),1)
 
 else ifeq ($(UNAME_S),Linux)
 
+    PLATFORM = linux
     TARGET  = $(BINDIR)/$(GAME)
     PYTHON  = python3
     LDFLAGS = $(shell sdl2-config --libs) -lm
@@ -39,6 +40,7 @@ else ifeq ($(UNAME_S),Linux)
 
 else
 
+    PLATFORM = windows
     TARGET  = $(BINDIR)/$(GAME).exe
     PYTHON  = python
     LDFLAGS = $(shell sdl2-config --libs 2>NUL || echo -L/mingw64/lib -lSDL2main -lSDL2) \
@@ -51,6 +53,8 @@ else
               $(shell sdl2-config --cflags)
 
 endif
+
+OBJDIR  = build/$(PLATFORM)/$(GAME)
 
 EMBED_SRC = generated/$(GAME)_embedded_data.c
 EMBED_HDR = generated/$(GAME)_embedded_data.h
