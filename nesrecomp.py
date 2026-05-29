@@ -184,7 +184,60 @@ OPTABLE: Dict[int, Op] = {
     0x8F: Op("SAX","abs",3,4), 0x83: Op("SAX","izx",2,6),
 }
 
-TERMINATORS = {"RTS", "RTI", "JMP", "BRK"}
+# Fill remaining undocumented 6502 opcodes (57 more) — these are real
+# opcodes executed by the Ricoh 2A03; adding them lets BFS traverse
+# through code that uses them, rather than blocking at those bytes.
+_MORE_UNDOC: Dict[int, Op] = {
+    # -- SLO (ASL memory + ORA) --
+    0x03: Op("SLO","izx",2,8),  0x07: Op("SLO","zp",2,5),
+    0x0F: Op("SLO","abs",3,6),  0x13: Op("SLO","izy",2,8),
+    0x17: Op("SLO","zpx",2,6),  0x1B: Op("SLO","aby",3,7),
+    0x1F: Op("SLO","abx",3,7),
+    # -- RLA (ROL memory + AND) --
+    0x23: Op("RLA","izx",2,8),  0x27: Op("RLA","zp",2,5),
+    0x2F: Op("RLA","abs",3,6),  0x33: Op("RLA","izy",2,8),
+    0x37: Op("RLA","zpx",2,6),  0x3B: Op("RLA","aby",3,7),
+    0x3F: Op("RLA","abx",3,7),
+    # -- SRE (LSR memory + EOR) --
+    0x43: Op("SRE","izx",2,8),  0x47: Op("SRE","zp",2,5),
+    0x4F: Op("SRE","abs",3,6),  0x53: Op("SRE","izy",2,8),
+    0x57: Op("SRE","zpx",2,6),  0x5B: Op("SRE","aby",3,7),
+    0x5F: Op("SRE","abx",3,7),
+    # -- RRA (ROR memory + ADC) --
+    0x63: Op("RRA","izx",2,8),  0x67: Op("RRA","zp",2,5),
+    0x6F: Op("RRA","abs",3,6),  0x73: Op("RRA","izy",2,8),
+    0x77: Op("RRA","zpx",2,6),  0x7B: Op("RRA","aby",3,7),
+    0x7F: Op("RRA","abx",3,7),
+    # -- DCP (DEC memory + CMP) --
+    0xC3: Op("DCP","izx",2,8),  0xC7: Op("DCP","zp",2,5),
+    0xCF: Op("DCP","abs",3,6),  0xD3: Op("DCP","izy",2,8),
+    0xD7: Op("DCP","zpx",2,6),  0xDB: Op("DCP","aby",3,7),
+    0xDF: Op("DCP","abx",3,7),
+    # -- ISB (INC memory + SBC) --
+    0xE3: Op("ISB","izx",2,8),  0xE7: Op("ISB","zp",2,5),
+    0xEF: Op("ISB","abs",3,6),  0xF3: Op("ISB","izy",2,8),
+    0xF7: Op("ISB","zpx",2,6),  0xFB: Op("ISB","aby",3,7),
+    0xFF: Op("ISB","abx",3,7),
+    # -- #imm variants with unique mnemonics --
+    0x0B: Op("ANC","imm",2,2),  0x2B: Op("ANC","imm",2,2),
+    0x4B: Op("ALR","imm",2,2),  0x6B: Op("ARR","imm",2,2),
+    0x8B: Op("XAA","imm",2,2),  0xAB: Op("LAX","imm",2,2),
+    0xCB: Op("SBX","imm",2,2),  0xEB: Op("SBC","imm",2,2),
+    # -- Various undocumented stores/transfers --
+    0x93: Op("AHX","izy",2,6),  0x9B: Op("TAS","aby",3,5),
+    0x9C: Op("SHY","abx",3,5),  0x9E: Op("SHX","aby",3,5),
+    0x9F: Op("AHX","aby",3,5),  0xBB: Op("LAR","aby",3,4),
+    # -- STP (Stop/JAM/KIL) — halts the CPU (all 12 canonical slots)
+    0x02: Op("STP","imp",1,1),  0x12: Op("STP","imp",1,1),
+    0x22: Op("STP","imp",1,1),  0x32: Op("STP","imp",1,1),
+    0x42: Op("STP","imp",1,1),  0x52: Op("STP","imp",1,1),
+    0x62: Op("STP","imp",1,1),  0x72: Op("STP","imp",1,1),
+    0x92: Op("STP","imp",1,1),  0xB2: Op("STP","imp",1,1),
+    0xD2: Op("STP","imp",1,1),  0xF2: Op("STP","imp",1,1),
+}
+OPTABLE.update(_MORE_UNDOC)
+
+TERMINATORS = {"RTS", "RTI", "JMP", "BRK", "STP"}
 BRANCH_OPS  = {"BCC","BCS","BEQ","BNE","BMI","BPL","BVC","BVS"}
 
 # ---------------------------------------------------------------------------
@@ -324,23 +377,35 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
     elif mn == "SED": lines += ["cpu.D = 1;"]
     elif mn == "CLV": lines += ["cpu.V = 0;"]
     elif mn == "NOP": lines += ["/* NOP */"]
-    elif mn == "BRK": lines += ["cpu_brk();"]
+    elif mn == "BRK":
+        lines += ["cpu.PC++;",
+                   "stack_push((cpu.PC >> 8) & 0xFF);",
+                   "stack_push(cpu.PC & 0xFF);",
+                   "stack_push(get_P() | 0x10);",
+                   "cpu.I = 1;",
+                   "cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);",
+                    "return;"]
+    elif mn == "STP": lines += ["/* STP — halt */", "return;"]
     elif mn == "JSR":
         tgt = operand & 0xFFFF
-        lines += [f"func_{tgt:04X}();"]
+        # Push return_addr-1 = (pc+3)-1 = pc+2 (high byte first)
+        lines += [f"stack_push(((uint16_t)(0x{pc:04X} + 2) >> 8) & 0xFF);",
+                   f"stack_push(((uint16_t)(0x{pc:04X} + 2)      ) & 0xFF);",
+                   f"cpu.PC = 0x{tgt:04X};",
+                   "return;"]
     elif mn == "JMP":
         if m == "abs":
             tgt = operand & 0xFFFF
-            if tgt in labels:
-                lines += [f"goto lbl_{tgt:04X};"]
-            else:
-                lines += [f"func_{tgt:04X}(); return;"]
+            lines += [f"cpu.PC = 0x{tgt:04X};", "return;"]
         else:  # indirect — runtime dispatch
-            lines += [f"call_by_address(ind_addr(0x{operand:04X}));", "return;"]
+            lines += [f"cpu.PC = ind_addr(0x{operand:04X});", "return;"]
     elif mn == "RTS":
-        lines += ["return;"]
+        lines += ["{ uint16_t _ra = stack_pop(); _ra |= (uint16_t)stack_pop() << 8; cpu.PC = _ra + 1; }",
+                   "return;"]
     elif mn == "RTI":
-        lines += ["set_P(stack_pop());", "return; /* RTI */"]
+        lines += ["set_P(stack_pop());",
+                   "{ uint16_t _ra = stack_pop(); _ra |= (uint16_t)stack_pop() << 8; cpu.PC = _ra; }",
+                   "return;"]
     elif mn in BRANCH_OPS:
         tgt = branch_target(pc, operand)
         cond = {
@@ -349,11 +414,7 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
             "BMI": "cpu.N",  "BPL": "!cpu.N",
             "BVC": "!cpu.V", "BVS": "cpu.V",
         }[mn]
-        if tgt in labels:
-            lines += [f"if ({cond}) goto lbl_{tgt:04X};"]
-        else:
-            # branch crosses function boundary (rare but possible)
-            lines += [f"if ({cond}) {{ func_{tgt:04X}(); return; }}"]
+        lines += [f"if ({cond}) {{ cpu.PC = 0x{tgt:04X}; return; }}"]
     else:
         lines += [f"/* UNHANDLED {mn} */"]
     return lines
@@ -373,9 +434,24 @@ class Disassembler:
         self.data_regions: Set[range] = set()
 
     def prg_read(self, addr: int) -> int:
-        """Simplified mapper 0/1/4 read at CPU address."""
-        if addr < 0x8000:
+        """Simplified mapper read at CPU address."""
+        if addr < 0x8000 or addr > 0xFFFF:
             return 0xFF
+        # MMC3: 8KB bank granularity with two switchable slots and two fixed slots
+        if self.mapper == 4:
+            if addr >= 0xE000:
+                bank_8k = self.prg_banks * 2 - 1
+                offset = bank_8k * 0x2000 + (addr - 0xE000)
+            elif addr >= 0xC000:
+                bank_8k = self.prg_banks * 2 - 2
+                offset = bank_8k * 0x2000 + (addr - 0xC000)
+            elif addr >= 0xA000:
+                bank_8k = self.prg_banks * 2 - 1
+                offset = bank_8k * 0x2000 + (addr - 0xA000)
+            else:
+                bank_8k = self.prg_banks * 2 - 2
+                offset = bank_8k * 0x2000 + (addr - 0x8000)
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
         offset = addr - 0x8000
         # If 1 bank (16KB), mirror
         if self.prg_banks == 1:
@@ -383,6 +459,10 @@ class Disassembler:
         elif offset >= len(self.prg):
             offset = offset % len(self.prg)
         return self.prg[offset] if offset < len(self.prg) else 0xFF
+
+    def is_switchable(self, addr: int) -> bool:
+        """For MMC3: $8000-$BFFF can switch banks at runtime."""
+        return self.mapper == 4 and 0x8000 <= addr < 0xC000
 
     def read_vector(self, addr: int) -> int:
         lo = self.prg_read(addr)
@@ -401,19 +481,25 @@ class Disassembler:
             operand |= self.prg_read(pc + 2) << 8
         return op, operand
 
-    def discover(self, seeds: List[int]):
-        visited: Set[int] = set()
+    def _bfs(self, seeds: List[int], visited: Set[int], max_func: int = 15000):
+        """Single BFS pass from seeds. Returns new entries discovered."""
+        new_found = 0
         queue: List[int] = list(seeds)
 
-        while queue:
+        while queue and new_found < max_func:
             entry = queue.pop(0)
             if entry in visited or entry < 0x8000:
+                continue
+            # MMC3: skip switchable banks — handled by interpreter at runtime
+            if self.is_switchable(entry):
                 continue
             visited.add(entry)
 
             insns: List[Tuple[int, Op, int]] = []
             pc = entry
-            while True:
+            steps = 0
+            while steps < 512:
+                steps += 1
                 dec = self.decode_at(pc)
                 if dec is None:
                     break
@@ -423,30 +509,65 @@ class Disassembler:
                 # Follow JSR/JMP abs
                 if op.mnemonic == "JSR":
                     tgt = operand & 0xFFFF
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
+                    # JSR return address = pc+3 → RTS will return here
+                    ret = pc + 3
+                    if ret not in visited and not self.is_switchable(ret):
+                        queue.append(ret)
                 elif op.mnemonic == "JMP" and op.mode == "abs":
                     tgt = operand & 0xFFFF
-                    # If target is within same function body → not a new func
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
                 elif op.mnemonic in BRANCH_OPS:
                     tgt = branch_target(pc, operand)
-                    if tgt not in visited:
+                    if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
 
                 if op.mnemonic in TERMINATORS:
                     break
                 pc += op.size
+                if pc > 0xFFFF:
+                    break  # wrapped past 64KB — not valid 6502 code
 
             if insns:
                 self.functions[entry] = insns
+                new_found += 1
 
-        # Extra functions from cfg
-        for ea in self.extra_funcs:
-            if ea not in self.functions:
-                queue = [ea]
-                self.discover(queue)
+        if new_found >= max_func:
+            print(f"[nesrecomp] BFS hit limit ({max_func} functions)")
+
+        return new_found
+
+    def discover(self, seeds: List[int]):
+        visited: Set[int] = set()
+        # MMC3: filter out switchable-bank addresses from seeds
+        all_seeds = [s for s in (list(seeds) + list(self.extra_funcs)) if not self.is_switchable(s)]
+        self._bfs(all_seeds, visited)
+
+        # Orphan phase: code right after terminators (RTS/RTI/JMP/BRK).
+        # Try up to 3 offset bytes to skip small data gaps between
+        # discovered code and orphan code islands.
+        while True:
+            orphans: List[int] = []
+            for entry, insns in self.functions.items():
+                last_pc, last_op, _ = insns[-1]
+                if last_op.mnemonic in TERMINATORS:
+                    next_pc = last_pc + last_op.size
+                    for off in range(3):
+                        addr = next_pc + off
+                        if addr < 0x8000 or addr >= 0x10000 or self.is_switchable(addr):
+                            break
+                        if addr not in visited:
+                            dec = self.decode_at(addr)
+                            if dec is not None:
+                                orphans.append(addr)
+                                break
+
+            if not orphans:
+                break
+
+            self._bfs(list(set(orphans)), visited)
 
 # ---------------------------------------------------------------------------
 # C Code emitter
@@ -492,18 +613,15 @@ class CEmitter:
         # Function bodies
         for entry in sorted(self.dis.functions):
             insns  = self.dis.functions[entry]
-            labels = self._collect_labels(entry)
-            # Labels that are branch targets within this function
-            internal = labels & {pc for pc, _, _ in insns}
 
             lines.append(f'void func_{entry:04X}(void) {{')
             for pc, op, operand in insns:
-                if pc in internal:
-                    lines.append(f'  lbl_{pc:04X}:;')
                 comment = f'  /* ${pc:04X}  {op.mnemonic} */'
-                stmts = emit_instruction(op, operand, pc, internal)
+                lines.append(f'  cpu.PC = 0x{pc:04X};')
+                stmts = emit_instruction(op, operand, pc, set())
                 if stmts:
                     lines.append(comment)
+                    lines.append(f'  g_cpu_cycles += {op.cycles};')
                     for s in stmts:
                         lines.append(f'  {s}')
             lines.append('}')
@@ -532,8 +650,9 @@ class CEmitter:
         for entry in sorted(known):
             lines.append(f'    case 0x{entry:04X}: func_{entry:04X}(); return;')
         lines.append('    default:')
-        lines.append('      fprintf(stderr, "[nesrecomp] Unknown dispatch $%04X\\n", addr);')
-        lines.append('      break;')
+        lines.append('      runner_miss(addr);')
+        lines.append('      cpu_interp_step();')
+        lines.append('      return;')
         lines.append('  }')
         lines.append('}')
         lines.append('')
@@ -575,6 +694,151 @@ def parse_cfg(path: str) -> dict:
     return cfg
 
 # ---------------------------------------------------------------------------
+# ASM label parser (ca65 format)
+# ---------------------------------------------------------------------------
+
+# Build mnemonic->[(mode, size)] lookup from OPTABLE
+ASM_INSNS: Dict[str, List[Tuple[str, int]]] = {}
+for opcode, op in OPTABLE.items():
+    ASM_INSNS.setdefault(op.mnemonic, []).append((op.mode, op.size))
+
+def parse_asm_labels(path: str) -> Set[int]:
+    """Parse ca65 asm file, return set of code addresses (labels >= $8000)."""
+    if not os.path.exists(path):
+        print(f"[nesrecomp] ASM file not found: {path}")
+        return set()
+
+    labels: Set[int] = set()
+    pc: int = 0
+    in_code = False
+    code_org: Optional[int] = None
+
+    with open(path) as f:
+        for line in f:
+            raw = line
+            # strip comments
+            if ';' in line:
+                line = line[:line.index(';')]
+            line = line.strip()
+            if not line:
+                continue
+
+            # .org directive
+            if line.startswith('.org'):
+                try:
+                    val_str = line.split()[-1]
+                    org = int(val_str.replace('$', ''), 16)
+                except ValueError:
+                    continue
+                if org >= 0x8000:
+                    code_org = org
+                    pc = org
+                    in_code = True
+                continue
+
+            # .segment directive
+            if '.segment' in line:
+                # Only enter code/PRG segments
+                in_code = '"CODE"' in line or '"PRG"' in line or '"HEADER"' in line
+                if in_code and code_org is not None:
+                    pc = code_org
+                continue
+
+            if not in_code:
+                continue
+
+            # Extract label (handle label: instruction, label: only, etc.)
+            label = None
+            instr_part = line
+            if ':' in line:
+                parts = line.split(':', 1)
+                label_candidate = parts[0].strip()
+                if label_candidate and label_candidate[0].isalpha():
+                    label = label_candidate
+                instr_part = parts[1].strip() if len(parts) > 1 else ''
+            else:
+                instr_part = line
+
+            # Record label
+            if label:
+                labels.add(pc)
+
+            # Determine byte size of this line
+            instr_upper = instr_part.upper()
+
+            if not instr_part:
+                size = 0
+            elif instr_upper.startswith('.BYTE') or instr_upper.startswith('.DB'):
+                # Count comma-separated expressions; strings count as their length
+                rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
+                size = 0
+                if rest.startswith('"') or rest.startswith("'"):
+                    # String literal
+                    quote = rest[0]
+                    end = rest.find(quote, 1)
+                    if end > 0:
+                        size = end
+                    else:
+                        size = 1
+                else:
+                    size = rest.count(',') + 1 if rest else 1
+            elif instr_upper.startswith('.WORD') or instr_upper.startswith('.ADDR') or instr_upper.startswith('.DW'):
+                rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
+                size = (rest.count(',') + 1) * 2 if rest else 2
+            elif instr_upper.startswith('.RES') or instr_upper.startswith('.DS'):
+                try:
+                    rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
+                    size = int(rest.split(',')[0])
+                except (ValueError, IndexError):
+                    size = 1
+            else:
+                # Try to match as a 6502 instruction
+                mn = instr_part.split()[0].upper() if instr_part else ''
+                size = 0
+                if mn in ASM_INSNS:
+                    # Use the largest size for this mnemonic (worst case)
+                    # Better: try to guess from operand format
+                    op_part = instr_part[len(mn):].strip() if len(instr_part) > len(mn) else ''
+                    matched = False
+                    for mode, sz in ASM_INSNS[mn]:
+                        if mode == 'imp' and not op_part:
+                            size = sz; matched = True; break
+                        elif mode == 'imm' and op_part.startswith('#'):
+                            size = sz; matched = True; break
+                        elif mode == 'zp' and not op_part.startswith('#') and ',' not in op_part:
+                            # Could be zp or abs — assume abs=3 if operand looks 4-digit
+                            try:
+                                val = int(op_part.replace('$',''), 16)
+                                size = 2 if val < 0x100 else 3
+                            except:
+                                size = 3
+                            matched = True; break
+                        elif mode in ('zpx', 'abx') and ',X' in op_part.upper():
+                            size = sz; matched = True; break
+                        elif mode in ('zpy', 'aby') and ',Y' in op_part.upper():
+                            size = sz; matched = True; break
+                        elif mode == 'abs' and not op_part.startswith('#') and ',' not in op_part:
+                            size = 3; matched = True; break
+                        elif mode == 'ind' and '(' in op_part:
+                            size = 3; matched = True; break
+                        elif mode == 'izx' and '(' in op_part and ',X' in op_part.upper():
+                            size = 2; matched = True; break
+                        elif mode == 'izy' and '(' in op_part and ',Y' in op_part.upper():
+                            size = 2; matched = True; break
+                        elif mode == 'rel':
+                            size = 2; matched = True; break
+                    if not matched:
+                        size = 3  # safe default
+                else:
+                    size = 3  # unknown instruction, assume 3 bytes
+
+            pc += size
+
+    print(f"[nesrecomp] ASM: {len(labels)} labels >= $8000 from {path}")
+    return labels
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -582,6 +846,7 @@ def main():
     ap = argparse.ArgumentParser(description="NES Static Recompiler")
     ap.add_argument("rom",  help=".nes ROM file")
     ap.add_argument("--cfg", default=None, help="Config file (optional)")
+    ap.add_argument("--asm", default=None, help="ca65 assembly source (extracts labels as entries)")
     ap.add_argument("--out", default="generated", help="Output directory")
     ap.add_argument("--game", default=None, help="Game name prefix (default: rom stem)")
     args = ap.parse_args()
@@ -610,6 +875,14 @@ def main():
 
     seeds = [reset, nmi, irq]
     seeds += cfg.get("extra_func", [])
+
+    # ASM labels
+    if args.asm:
+        asm_labels = parse_asm_labels(args.asm)
+        for a in asm_labels:
+            dis.extra_funcs.add(a)
+        seeds += list(asm_labels)
+
     dis.discover(seeds)
 
     print(f"[nesrecomp] Discovered {len(dis.functions)} functions")

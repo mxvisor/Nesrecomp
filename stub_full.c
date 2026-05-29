@@ -1,4 +1,4 @@
-/* stub_full.c — интерпретаторный режим, без generated кода */
+/* stub_full.c — interpreter-only mode, no generated code */
 #include "runner.h"
 
 void call_by_address(uint16_t addr) {

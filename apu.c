@@ -300,7 +300,7 @@ static float mix_output(void) {
    APU step — one CPU cycle
    ========================================================================= */
 /* Fixed-point sample accumulator: counts CPU cycles * 100 */
-/* Sample threshold = CPU_HZ/SAMPLE_HZ * 100 = 1789773/44100*100 ≈ 4058 */
+/* Sample threshold = CPU_HZ/SAMPLE_HZ * 100 = 1789773/44100*100 ~= 4058 */
 static int32_t sample_frac = 0;
 #define SAMPLE_FRAC_STEP  100
 #define SAMPLE_FRAC_MAX   4058   /* 1789773*100/44100 */

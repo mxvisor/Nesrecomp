@@ -34,7 +34,7 @@ static inline void set_P(uint8_t p) {
    ========================================================================= */
 #define RAM_SIZE    0x0800
 #define SRAM_SIZE   0x2000
-#define PRG_ROM_MAX 0x80000  /* 512KB — Aa Yakyuu = 32×16KB = 512KB */
+#define PRG_ROM_MAX 0x80000  /* 512KB — Aa Yakyuu = 32*16KB = 512KB */
 
 extern uint8_t ram[RAM_SIZE];
 extern uint8_t sram[SRAM_SIZE];
@@ -70,6 +70,12 @@ static inline uint8_t stack_pop(void) {
 }
 
 /* =========================================================================
+   Interrupt flags (set by nes_nmi/nes_irq, checked by main loop + interpreter)
+   ========================================================================= */
+extern volatile int g_nmi_pending;
+extern volatile int g_irq_pending;
+
+/* =========================================================================
    Interrupt / dispatch
    ========================================================================= */
 void call_by_address(uint16_t addr);
@@ -97,7 +103,7 @@ typedef struct {
     uint32_t cycle;
     int      scanline;
     uint8_t  frame_ready;
-    uint8_t  nmi_suppressed;  /* для корректного NMI */
+    uint8_t  nmi_suppressed;  /* suppress NMI when $2002 read clears VBlank flag */
     uint32_t framebuf[SCREEN_W * SCREEN_H];
 
     uint16_t t_addr, v_addr;
@@ -206,9 +212,19 @@ void runner_run(void);
 void runner_quit(void);
 
 /* =========================================================================
+   Cycle counter (used by recompiled code and interpreter)
+   ========================================================================= */
+extern uint32_t g_cpu_cycles;
+
+/* =========================================================================
    6502 Interpreter
    ========================================================================= */
 int  cpu_interp_step(void);
 void cpu_interp_run(uint16_t entry);
+
+/* =========================================================================
+   Learning mode — collect dispatch misses into .cfg
+   ========================================================================= */
+void runner_miss(uint16_t addr);
 
 #endif
