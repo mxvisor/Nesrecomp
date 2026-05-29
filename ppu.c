@@ -375,17 +375,17 @@ void ppu_step(void) {
         if (NMI_EN) nes_nmi();
     }
 
+    /* MMC3 Scanline IRQ: dot 260 (hblank) видимых строк 0-239.
+       Стреляем в hblank чтобы CPU успел переключить CHR банк до начала следующей строки. */
+    if (RENDER && dot == 260 && scanline < 240) {
+        mapper_scanline();
+    }
+
     /* ---- Advance dot / scanline ---- */
     ppu.cycle++;
     if (ppu.cycle > 340) {
         ppu.cycle = 0;
         ppu.scanline++;
-        
-        /* MMC3 Scanline IRQ — КРИТИЧНО ДЛЯ SMB3! */
-        if (RENDER) {
-            mapper_scanline();
-        }
-        
         if (ppu.scanline > 261) ppu.scanline = 0;
     }
 }

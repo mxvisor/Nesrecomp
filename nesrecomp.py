@@ -435,7 +435,7 @@ class Disassembler:
 
     def prg_read(self, addr: int) -> int:
         """Simplified mapper read at CPU address."""
-        if addr < 0x8000:
+        if addr < 0x8000 or addr > 0xFFFF:
             return 0xFF
         # MMC3: 8KB bank granularity with two switchable slots and two fixed slots
         if self.mapper == 4:
@@ -527,6 +527,8 @@ class Disassembler:
                 if op.mnemonic in TERMINATORS:
                     break
                 pc += op.size
+                if pc > 0xFFFF:
+                    break  # wrapped past 64KB — not valid 6502 code
 
             if insns:
                 self.functions[entry] = insns

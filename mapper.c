@@ -167,7 +167,7 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
             else { mapper.m4_irq_counter = 0; mapper.m4_irq_reload = 1; }
         } else {
             if (addr & 1) mapper.m4_irq_enable = 1;
-            else mapper.m4_irq_enable = 0;
+            else { mapper.m4_irq_enable = 0; g_irq_pending = 0; } /* acknowledge */
         }
         break;
         
