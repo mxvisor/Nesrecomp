@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <stdatomic.h>
 
 /* Flag set by SIGTERM handler so runner_run() exits cleanly */
 static volatile int g_running = 1;
@@ -51,8 +52,8 @@ static int load_rom(const char *path) {
 
 static float ring_buf[RING_SIZE];
 
-static volatile int ring_write = 0;
-static volatile int ring_read  = 0;
+static _Atomic int ring_write = 0;
+static _Atomic int ring_read  = 0;
 
 static SDL_AudioDeviceID audio_dev = 0;
 
@@ -65,24 +66,24 @@ static void audio_callback(void *ud, Uint8 *stream, int len) {
     static float last_sample = 0.0f;
 
     for (int i = 0; i < n; i++) {
-        int next_read = (ring_read + 1) & RING_MASK;
+        int rp = atomic_load_explicit(&ring_read, memory_order_relaxed);
+        int wp = atomic_load_explicit(&ring_write, memory_order_acquire);
 
-        if (next_read != ring_write) {
-            last_sample = ring_buf[ring_read];
-            out[i] = last_sample;
-            ring_read = next_read;
-        } else {
-            out[i] = last_sample;
+        if (rp != wp) {
+            last_sample = ring_buf[rp];
+            atomic_store_explicit(&ring_read, (rp + 1) & RING_MASK, memory_order_release);
         }
+        out[i] = last_sample;
     }
 }
 
 static inline void audio_push(float s) {
-    int nw = (ring_write + 1) & RING_MASK;
+    int wp = atomic_load_explicit(&ring_write, memory_order_relaxed);
+    int nw = (wp + 1) & RING_MASK;
 
-    if (nw != ring_read) {
-        ring_buf[ring_write] = s;
-        ring_write = nw;
+    if (nw != atomic_load_explicit(&ring_read, memory_order_acquire)) {
+        ring_buf[wp] = s;
+        atomic_store_explicit(&ring_write, nw, memory_order_release);
     }
 }
 

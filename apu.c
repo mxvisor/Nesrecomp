@@ -28,6 +28,12 @@ static const uint16_t NOISE_PERIOD[16] = {
 };
 
 /* =========================================================================
+   Forward declarations
+   ========================================================================= */
+static void clock_quarter_frame(void);
+static void clock_half_frame(void);
+
+/* =========================================================================
    Register writes
    ========================================================================= */
 void apu_write(uint16_t addr, uint8_t val) {
@@ -137,19 +143,19 @@ void apu_write(uint16_t addr, uint8_t val) {
         apu.frame_counter_mode = (val >> 7) & 1;
         apu.frame_irq_inhibit  = (val >> 6) & 1;
         apu.frame_clock = 0;
-        /* 5-step: clock immediately */
-        if (apu.frame_counter_mode) {
-            /* clock half+quarter frame now */
-        }
+        /* 5-step: immediately clock quarter + half frame */
+        if (apu.frame_counter_mode)
+            clock_half_frame();
         break;
     }
 }
 
 uint8_t apu_read_status(void) {
-    return ((apu.pulse[0].length > 0) ? 1 : 0)
-         | ((apu.pulse[1].length > 0) ? 2 : 0)
-         | ((apu.tri.length      > 0) ? 4 : 0)
-         | ((apu.noise.length    > 0) ? 8 : 0);
+    return ((apu.pulse[0].length    > 0) ? 0x01 : 0)
+         | ((apu.pulse[1].length    > 0) ? 0x02 : 0)
+         | ((apu.tri.length         > 0) ? 0x04 : 0)
+         | ((apu.noise.length       > 0) ? 0x08 : 0)
+         | ((apu.dmc.bytes_remaining > 0) ? 0x10 : 0);
 }
 
 /* =========================================================================
@@ -194,11 +200,26 @@ static void clock_noise_envelope(void) {
 /* =========================================================================
    Sweep unit for pulse channels
    ========================================================================= */
-static void clock_sweep(int ch) {
-    /* Compute target period */
-    int16_t delta = (int16_t)(apu.pulse[ch].timer_reload >> apu.pulse[ch].sweep_shift);
+
+/* Compute sweep target period with correct negative clamping.
+   Per wiki: target is clamped to 0 if negative (not wrapped as uint16_t).
+   Pulse 1 uses ones'-complement negate (-c-1), Pulse 2 uses twos'-complement (-c). */
+static uint16_t sweep_target(int ch) {
+    int32_t t = (int32_t)apu.pulse[ch].timer_reload;
+    int32_t delta = t >> apu.pulse[ch].sweep_shift;
     if (apu.pulse[ch].sweep_negate) delta = (ch == 0) ? -delta - 1 : -delta;
-    uint16_t target = (uint16_t)((int16_t)apu.pulse[ch].timer_reload + delta);
+    int32_t target = t + delta;
+    if (target < 0) target = 0;
+    return (uint16_t)target;
+}
+
+/* Returns 1 if sweep unit mutes the channel (always applies, even when disabled). */
+static int sweep_muted(int ch) {
+    return (apu.pulse[ch].timer_reload < 8) || (sweep_target(ch) > 0x7FF);
+}
+
+static void clock_sweep(int ch) {
+    uint16_t target = sweep_target(ch);
 
     /* Clock divider */
     if (apu.pulse[ch].sweep_reload) {
@@ -206,11 +227,10 @@ static void clock_sweep(int ch) {
         apu.pulse[ch].sweep_divider  = apu.pulse[ch].sweep_period;
     } else if (apu.pulse[ch].sweep_divider == 0) {
         apu.pulse[ch].sweep_divider  = apu.pulse[ch].sweep_period;
-        /* Update period if enabled and not muting */
+        /* Update period if enabled, shift > 0, and not muting */
         if (apu.pulse[ch].sweep_en &&
             apu.pulse[ch].sweep_shift > 0 &&
-            apu.pulse[ch].timer_reload >= 8 &&
-            target <= 0x7FF) {
+            !sweep_muted(ch)) {
             apu.pulse[ch].timer_reload = target;
         }
     } else {
@@ -221,10 +241,12 @@ static void clock_sweep(int ch) {
 /* =========================================================================
    Frame sequencer
    ========================================================================= */
-/* 4-step: clocks at CPU cycles 3728, 7456, 11185, 14914 */
-/* 5-step: clocks at CPU cycles 3728, 7456, 11185, 14914, 18640 */
-static const uint32_t SEQ4[4] = {3729, 7457, 11186, 14915};
-static const uint32_t SEQ5[5] = {3729, 7457, 11186, 14915, 18641};
+/* Frame sequencer fires at APU cycles 3728/7456/11185/14914 (4-step).
+   apu_step() is called every CPU cycle, so frame_clock counts CPU cycles.
+   1 APU cycle = 2 CPU cycles → multiply APU cycle counts by 2.
+   Values from blargg's apu_ref.txt (standard NES emulation reference). */
+static const uint32_t SEQ4[4] = {7457, 14913, 22371, 29829};
+static const uint32_t SEQ5[5] = {7457, 14913, 22371, 29829, 37281};
 
 static void clock_quarter_frame(void) {
     clock_envelope(0);
@@ -254,22 +276,23 @@ static void clock_half_frame(void) {
    Mixer — NES non-linear mixing
    ========================================================================= */
 static float mix_output(void) {
-    /* Pulse output */
+    /* Pulse output — muted by sweep unit when period < 8 or target > $7FF
+       (applies regardless of sweep enable flag, per hardware spec) */
     uint8_t p0 = 0, p1 = 0;
-    if (apu.pulse[0].length > 0 && apu.pulse[0].timer_reload >= 8) {
-        uint8_t vol = apu.pulse[0].constant_vol ? apu.pulse[0].volume
-                                                 : apu.pulse[0].envelope_decay;
-        p0 = DUTY_SEQ[apu.pulse[0].duty][apu.pulse[0].seq_pos & 7] * vol;
-    }
-    if (apu.pulse[1].length > 0 && apu.pulse[1].timer_reload >= 8) {
-        uint8_t vol = apu.pulse[1].constant_vol ? apu.pulse[1].volume
-                                                 : apu.pulse[1].envelope_decay;
-        p1 = DUTY_SEQ[apu.pulse[1].duty][apu.pulse[1].seq_pos & 7] * vol;
+    for (int ch = 0; ch < 2; ch++) {
+        if (apu.pulse[ch].length > 0 && !sweep_muted(ch)) {
+            uint8_t vol = apu.pulse[ch].constant_vol ? apu.pulse[ch].volume
+                                                     : apu.pulse[ch].envelope_decay;
+            uint8_t out = DUTY_SEQ[apu.pulse[ch].duty][apu.pulse[ch].seq_pos & 7] * vol;
+            if (ch == 0) p0 = out; else p1 = out;
+        }
     }
 
-    /* Triangle output */
+    /* Triangle output — when halted (length=0 or linear=0) the sequencer
+       freezes but the DAC holds the last step value (frozen DC), not silence.
+       Mute only at ultrasonic periods (timer < 2) to avoid aliasing clicks. */
     uint8_t tri = 0;
-    if (apu.tri.length > 0 && apu.tri.linear_counter > 0 && apu.tri.timer_reload >= 2)
+    if (apu.tri.timer_reload >= 2)
         tri = TRI_SEQ[apu.tri.seq_pos & 31];
 
     /* Noise output */
@@ -305,33 +328,44 @@ static int32_t sample_frac = 0;
 #define SAMPLE_FRAC_STEP  100
 #define SAMPLE_FRAC_MAX   4058   /* 1789773*100/44100 */
 
+/* Pulse channels clock every 2 CPU cycles (APU cycle), not every CPU cycle */
+static uint8_t pulse_half = 0;
+
 void apu_step(void) {
     apu.frame_clock++;
+    pulse_half ^= 1;
 
     /* Frame sequencer */
     const uint32_t *seq   = apu.frame_counter_mode ? SEQ5 : SEQ4;
     int             steps = apu.frame_counter_mode ? 5 : 4;
     for (int i = 0; i < steps; i++) {
         if (apu.frame_clock == seq[i]) {
-            if (i == 1 || i == 3 || (apu.frame_counter_mode && i == 4))
-                clock_half_frame();
-            else
-                clock_quarter_frame();
+            if (!apu.frame_counter_mode) {
+                /* 4-step: Q at every step, H at steps 1 and 3 */
+                if (i == 1 || i == 3) clock_half_frame();
+                else                   clock_quarter_frame();
+            } else {
+                /* 5-step: Q+H at steps 1 and 4, Q at steps 0 and 2, nothing at step 3 */
+                if (i == 1 || i == 4)      clock_half_frame();
+                else if (i == 0 || i == 2) clock_quarter_frame();
+                /* i == 3: no clock */
+            }
             break;
         }
     }
-    if (apu.frame_clock >= (uint32_t)(apu.frame_counter_mode ? 18642 : 14916))
+    if (apu.frame_clock >= (uint32_t)(apu.frame_counter_mode ? 37282 : 29830))
         apu.frame_clock = 0;
 
-    /* Clock pulse timers (every 2 CPU cycles = every APU cycle) */
-    /* Approximate: clock every cycle for simplicity */
-    for (int ch = 0; ch < 2; ch++) {
-        if (apu.pulse[ch].timer == 0) {
-            apu.pulse[ch].timer = apu.pulse[ch].timer_reload;
-            if (apu.pulse[ch].timer_reload >= 8)
+    /* Clock pulse timers every 2 CPU cycles (= 1 APU cycle) */
+    if (pulse_half) {
+        for (int ch = 0; ch < 2; ch++) {
+            if (apu.pulse[ch].timer == 0) {
+                apu.pulse[ch].timer = apu.pulse[ch].timer_reload;
+                /* Sequencer always advances even when sweep mutes; muting is applied in mix_output */
                 apu.pulse[ch].seq_pos = (apu.pulse[ch].seq_pos + 1) & 7;
-        } else {
-            apu.pulse[ch].timer--;
+            } else {
+                apu.pulse[ch].timer--;
+            }
         }
     }
 
@@ -355,12 +389,32 @@ void apu_step(void) {
         apu.noise.timer--;
     }
 
-    /* Sample output */
+    /* Sample output — apply NES hardware HPF chain before storing */
     sample_frac += SAMPLE_FRAC_STEP;
     if (sample_frac >= SAMPLE_FRAC_MAX) {
         sample_frac -= SAMPLE_FRAC_MAX;
-        if (apu.sample_count < 4096)
-            apu.sample_buf[apu.sample_count++] = mix_output();
+        if (apu.sample_count < 4096) {
+            float x = mix_output();
+            /* NES hardware filter chain (post-DAC):
+               HPF 90 Hz  — α = 0.98726, removes DC bias
+               HPF 440 Hz — α = 0.93923, removes low-frequency rumble
+               LPF 14 kHz — α = 0.13606, removes high-frequency aliasing
+               y[n] = α*(y[n-1] + x[n] - x[n-1])  for HPF
+               y[n] = α*y[n-1] + (1-α)*x[n]        for LPF */
+            static float hp1_in = 0.0f, hp1_out = 0.0f;
+            float h1 = 0.98726f * (hp1_out + x - hp1_in);
+            hp1_in  = x;  hp1_out = h1;
+
+            static float hp2_in = 0.0f, hp2_out = 0.0f;
+            float h2 = 0.93923f * (hp2_out + h1 - hp2_in);
+            hp2_in  = h1; hp2_out = h2;
+
+            static float lp_out = 0.0f;
+            lp_out = 0.13606f * lp_out + (1.0f - 0.13606f) * h2;
+
+            /* Scale to SDL float range -1..1 */
+            apu.sample_buf[apu.sample_count++] = lp_out * 2.5f;
+        }
     }
 }
 
