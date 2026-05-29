@@ -202,7 +202,7 @@ void nes_reset(void) {
 }
 
 /* =========================================================================
-   Learning mode — автоматический сбор промахов dispatch
+   Learning mode — automatic collection of dispatch misses
    ========================================================================= */
 static void runner_miss_write_all(void);
 

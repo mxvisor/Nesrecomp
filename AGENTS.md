@@ -1,5 +1,13 @@
 # AGENTS.md — NESRecomp Project Guide for AI Agents
 
+## conventions
+
+- **Commit messages**: always in English
+- **Code comments**: always in English
+- **AGENTS.md / README**: English
+
+---
+
 ## Project Overview
 
 NESRecomp is a **static recompiler for NES ROM files**. It converts 6502 machine code into native C functions, then compiles them into a standalone executable. Unknown code paths fall back to a cycle-accurate 6502 interpreter. The result is a per-game binary with the ROM data embedded — no external ROM file needed at runtime.

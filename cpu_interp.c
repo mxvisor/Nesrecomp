@@ -1,11 +1,11 @@
 /*
- * cpu_interp.c — полный 6502 интерпретатор
+ * cpu_interp.c — full 6502 interpreter
  *
- * Используется как fallback когда call_by_address() получает адрес
- * которого нет в dispatch таблице (банк-переключение, динамический JMP и т.д.)
+ * Used as a fallback when call_by_address() receives an address
+ * not in the dispatch table (bank-switched code, dynamic JMP, etc.)
  *
- * cpu_interp_run(pc) — выполняет инструкции начиная с pc до RTS/RTI
- * cpu_interp_step()  — выполняет одну инструкцию, обновляет cpu.PC
+ * cpu_interp_run(pc) — execute instructions from pc until RTS/RTI
+ * cpu_interp_step()  — execute one instruction, advance cpu.PC
  */
 
 #include "runner.h"
@@ -315,23 +315,23 @@ int cpu_interp_step(void) {
 }
 
 /* =========================================================================
-   cpu_interp_run — интерпретировать начиная с addr пока не RTS/RTI
-   Используется как fallback из call_by_address()
+   cpu_interp_run — interpret from addr until RTS/RTI
+   Used as fallback from call_by_address()
    ========================================================================= */
 void cpu_interp_run(uint16_t entry) {
-    /* Сохраняем текущий SP — выходим когда стек вернулся к начальному уровню
-       (имитируем возврат из JSR) */
+    /* Save current SP — return when stack is back to the initial level
+       (simulates return from JSR) */
     cpu.PC = entry;
     uint8_t base_sp = cpu.SP;
-    int limit = 0x200000;  /* защита от зависания */
+    int limit = 0x200000;  /* hang guard */
     while (limit-- > 0) {
         uint8_t op = mem_read(cpu.PC);
-        /* RTS — возврат на уровень стека откуда вошли */
+        /* RTS — return to the stack level we entered at */
         if (op == 0x60) {
             uint16_t lo = stack_pop();
             uint16_t hi = stack_pop();
             cpu.PC = (lo | (hi << 8)) + 1;
-            /* Если SP вернулся к base_sp — мы вышли из нашей функции */
+            /* SP back to base_sp — we have returned from our function */
             if (cpu.SP == base_sp) return;
             continue;
         }

@@ -4,20 +4,20 @@
 /*
  * apu.h — APU (Audio Processing Unit): pulse, triangle, noise, DMC
  *
- * Фокус: только генерация звука.
- * Если звук неправильный — смотри apu.c.
- * APU не знает про PPU и mapper.
+ * Scope: audio synthesis only.
+ * If audio is wrong see apu.c.
+ * APU has no knowledge of PPU or mapper.
  *
- * Архитектура:
- *   apu_step()  вызывается 1 раз на CPU цикл (~1.79 MHz)
- *   Сэмплы накапливаются в sample_buf[]
- *   Runner сливает их в ring buffer -> SDL audio callback
+ * Architecture:
+ *   apu_step()  called once per CPU cycle (~1.79 MHz)
+ *   Samples accumulate in sample_buf[]
+ *   Runner drains them into ring buffer -> SDL audio callback
  *
- * Каналы:
- *   pulse[0], pulse[1]  — прямоугольные волны с sweep
- *   tri                 — треугольная волна
- *   noise               — шумовой генератор с LFSR
- *   dmc                 — delta modulation (PCM сэмплы из ROM)
+ * Channels:
+ *   pulse[0], pulse[1]  — square waves with sweep unit
+ *   tri                 — triangle wave
+ *   noise               — noise generator with LFSR
+ *   dmc                 — delta modulation (PCM samples from ROM)
  */
 
 #include <stdint.h>
@@ -25,14 +25,14 @@
 typedef struct {
     /* Pulse 1 & 2 */
     struct {
-        uint8_t  duty;           /* форма волны (0-3) */
-        uint8_t  length_halt;    /* остановить длину / loop envelope */
-        uint8_t  constant_vol;   /* постоянная громкость */
-        uint8_t  volume;         /* громкость/период огибающей */
-        uint16_t timer;          /* текущий таймер */
-        uint16_t timer_reload;   /* период таймера */
-        uint8_t  length;         /* счётчик длины */
-        uint8_t  enabled;        /* канал включён ($4015) */
+        uint8_t  duty;           /* waveform duty (0-3) */
+        uint8_t  length_halt;    /* halt length counter / loop envelope */
+        uint8_t  constant_vol;   /* constant volume flag */
+        uint8_t  volume;         /* volume / envelope period */
+        uint16_t timer;          /* current timer */
+        uint16_t timer_reload;   /* timer period */
+        uint8_t  length;         /* length counter */
+        uint8_t  enabled;        /* channel enabled ($4015) */
         /* Sweep unit */
         uint8_t  sweep_en;
         uint8_t  sweep_period;
@@ -70,7 +70,7 @@ typedef struct {
     /* DMC (Delta Modulation Channel) */
     struct {
         uint8_t  irq_en, loop, rate_idx, enabled;
-        uint8_t  output;            /* текущий уровень (0-127) */
+        uint8_t  output;            /* current output level (0-127) */
         uint16_t sample_addr, sample_len;
         uint16_t cur_addr, bytes_remaining;
         uint8_t  sample_buf, bits_remaining, silence;
@@ -81,23 +81,23 @@ typedef struct {
     uint8_t  frame_irq_inhibit;
     uint32_t frame_clock;
 
-    /* Выходные сэмплы (накапливаются в apu_step, сбрасываются runner'ом) */
+    /* Output samples (accumulated in apu_step, flushed by runner) */
     float    sample_buf[4096];
     int      sample_count;
 } APU;
 
 extern APU apu;
 
-/* Запись регистра APU (вызывается из memory.c) */
+/* Write APU register (called from memory.c) */
 void    apu_write(uint16_t addr, uint8_t val);
 
-/* Чтение $4015 */
+/* Read $4015 status */
 uint8_t apu_read_status(void);
 
-/* Один CPU цикл */
+/* One CPU cycle */
 void    apu_step(void);
 
-/* Слить накопленные сэмплы в buf (для audio callback) */
+/* Drain accumulated samples into buf (for audio callback) */
 void    apu_fill_buffer(float *buf, int samples);
 
 #endif /* APU_H */

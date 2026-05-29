@@ -1,4 +1,4 @@
-/* mapper: маппер + PPU (CHR) + прерывания */
+/* mapper: cartridge mapper — PRG/CHR banking, interrupts */
 #include "mapper.h"
 #include "ppu.h"
 #include "interrupts.h"
@@ -13,7 +13,7 @@ void mapper_init(int id, int prg_banks, int chr_banks, int mirroring) {
     mapper.prg_banks = prg_banks;
     mapper.chr_banks = chr_banks;
     
-    /* Castlevania требует вертикальное зеркалирование */
+    /* Castlevania requires vertical mirroring */
     if (id == 2) {
         mapper.mirroring = 1;
     } else {
@@ -39,7 +39,7 @@ void mapper_init(int id, int prg_banks, int chr_banks, int mirroring) {
     
     /* AxROM (Mapper 7) defaults */
     if (id == 7) {
-    mapper.m1_prg_bank = mapper.prg_banks - 1;  /* Последний банк */
+    mapper.m1_prg_bank = mapper.prg_banks - 1;  /* last bank */
     mapper.mirroring = 3;
 }
 }
@@ -160,7 +160,7 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
             }
         } else if (addr < 0xC000) {
             /* MMC3: val=0=vertical, val=1=horizontal
-               Наши константы: 0=H, 1=V — инвертируем */
+               Our constants: 0=H, 1=V — invert */
             if (!(addr & 1)) mapper.mirroring = (val & 1) ? 0 : 1;
         } else if (addr < 0xE000) {
             if (!(addr & 1)) mapper.m4_irq_latch = val;
@@ -260,7 +260,7 @@ void mapper_chr_write(uint16_t addr, uint8_t val) {
 void mapper_scanline(void) {
     if (mapper.id != 4) return;
     
-    /* Вызывается из ppu.c только при RENDER — доп. проверки не нужны */
+    /* Called from ppu.c only when RENDER is active — no extra checks needed */
     
     if (mapper.m4_irq_counter == 0 || mapper.m4_irq_reload) {
         mapper.m4_irq_counter = mapper.m4_irq_latch;

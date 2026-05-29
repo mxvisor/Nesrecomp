@@ -72,7 +72,7 @@ extern const uint8_t embedded_chr_rom[EMBEDDED_CHR_SIZE];
     src = f'''#include "{prefix}_embedded_data.h"
 
 /* Auto-generated from {os.path.basename(args.rom)} */
-/* PRG: {prg_banks} × 16KB, CHR: {chr_banks} × 8KB, Mapper: {mapper_id} */
+/* PRG: {prg_banks}*16KB, CHR: {chr_banks}*8KB, Mapper: {mapper_id} */
 
 {arr_bytes("embedded_prg_rom", prg)}
 

@@ -2,25 +2,25 @@
 #define RUNNER_H
 
 /*
- * runner.h — главный заголовок, включает все модули
+ * runner.h — master header, includes all modules
  *
- * Структура проекта:
+ * Project layout:
  *
- *   cpu.h        — регистры CPU 6502, флаги, SET_NZ
- *   memory.h     — карта памяти, стек, контроллер
- *   ppu.h        — PPU 2C02: рендеринг, scroll, спрайты
+ *   cpu.h        — 6502 CPU registers, flags, SET_NZ
+ *   memory.h     — memory map, stack, controller
+ *   ppu.h        — PPU 2C02: rendering, scroll, sprites
  *   apu.h        — APU: pulse, triangle, noise, DMC
- *   mapper.h     — маппер картриджа: PRG/CHR банкинг, IRQ
+ *   mapper.h     — cartridge mapper: PRG/CHR banking, IRQ
  *   interrupts.h — NMI, IRQ, RESET, call_by_address
  *
- * Где искать баги:
- *   Графика битая        -> ppu.c / ppu.h
- *   Звук неправильный    -> apu.c / apu.h
- *   Игра вылетает        -> cpu_interp.c / cpu.h
- *   Тайлы/скролл        -> mapper.c / mapper.h
- *   Ввод не работает     -> memory.c (ctrl_read/write)
- *   NMI не срабатывает   -> runner.c + interrupts.h
- *   Загрузка ROM         -> runner.c (load_rom)
+ * Where to look for bugs:
+ *   Corrupted graphics   -> ppu.c / ppu.h
+ *   Wrong audio          -> apu.c / apu.h
+ *   Game crashes         -> cpu_interp.c / cpu.h
+ *   Wrong tiles/scroll   -> mapper.c / mapper.h
+ *   Input not working    -> memory.c (ctrl_read/write)
+ *   NMI not firing       -> runner.c + interrupts.h
+ *   ROM loading          -> runner.c (load_rom)
  */
 
 #include <stdint.h>

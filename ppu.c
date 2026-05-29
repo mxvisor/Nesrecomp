@@ -1,4 +1,4 @@
-/* ppu: PPU + mapper (CHR) + прерывания */
+/* ppu: PPU 2C02 — rendering, CHR banking, interrupts */
 #include "ppu.h"
 #include "mapper.h"
 #include "interrupts.h"
@@ -7,7 +7,7 @@
 PPU ppu;
 
 /* =========================================================================
-   Palette — точная 2C02 NTSC палитра (ARGB8888)
+   Palette — accurate 2C02 NTSC palette (ARGB8888)
    ========================================================================= */
 static const uint32_t PALETTE[64] = {
     0xFF626262, 0xFF002CA8, 0xFF1212C8, 0xFF5200B0,
@@ -266,7 +266,7 @@ static void eval_sprites(int scanline) {
 }
 
 /* =========================================================================
-   PPU step — один dot (pixel clock)
+   PPU step — one dot (pixel clock)
    ========================================================================= */
 #define BG_EN   (ppu.regs[1] & 0x08)
 #define SP_EN   (ppu.regs[1] & 0x10)
@@ -283,7 +283,7 @@ void ppu_step(void) {
 
 #define RENDER_PIXELS (scanline < 240)
 
-        /* BG tile fetching ДО pixel — иначе gap на границе тайлов */
+        /* BG tile fetch BEFORE pixel output — prevents gap at tile boundaries */
         if (RENDER) {
             if (dot >= 9 && dot <= 257 && (dot & 7) == 1) {
                 fetch_bg_tile();
@@ -340,7 +340,7 @@ void ppu_step(void) {
             ppu.bg_pal_lo <<= 1; ppu.bg_pal_hi <<= 1;
         }
 
-        /* Остальное (inc/copy/prefetch) */
+        /* Scroll increment / copy / tile prefetch */
         if (RENDER) {
             if (dot == 256) inc_vert_v();
             if (dot == 257) copy_hori_v();
@@ -375,8 +375,8 @@ void ppu_step(void) {
         if (NMI_EN) nes_nmi();
     }
 
-    /* MMC3 Scanline IRQ: dot 260 (hblank) видимых строк 0-239.
-       Стреляем в hblank чтобы CPU успел переключить CHR банк до начала следующей строки. */
+    /* MMC3 Scanline IRQ: fire at dot 260 (hblank) of visible scanlines 0-239.
+       Firing during hblank gives the CPU time to switch CHR banks before the next scanline renders. */
     if (RENDER && dot == 260 && scanline < 240) {
         mapper_scanline();
     }
