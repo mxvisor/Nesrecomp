@@ -6,6 +6,10 @@
 - **Code comments**: always in English
 - **AGENTS.md / README**: English
 - **Commits**: never commit without explicit user confirmation
+- **After every change to `tools/nesrecomp.py`**: run a full recompile + build on a real ROM before continuing. Do not proceed to the next task until the build is clean. Example:
+  ```bash
+  make GAME=Battle
+  ```
 
 ---
 
@@ -77,21 +81,54 @@ For each entry point:
 - On branch: enqueue both taken and not-taken targets
 - Stop at terminators: RTS, RTI, JMP abs, BRK, STP
 
-Indirect JMPs (`JMP ($XXXX)`) are **not traceable statically** — handled at runtime by interpreter.
+Indirect JMPs (`JMP ($XXXX)`) — if the pointer address is in ROM (`>= $8000`), BFS reads consecutive word-sized entries from that address and enqueues each one that looks like a valid PRG address (`$8000–$FFFF`). Stops at the first non-PRG word. This catches dispatch tables of the form:
+
+```asm
+JMP (handler_table)
+handler_table:
+    .word handler_a, handler_b, handler_c
+```
 
 MMC3 switchable banks ($8000–$BFFF) are skipped during discovery — handled by `cpu_interp_run()`.
 
-After BFS, a second pass scans for orphan code islands (up to 3-byte gaps after terminators).
+### Orphan Phase
+
+After BFS, a second pass finds **orphan code islands** — subroutines that BFS never reached because no JSR/JMP/branch points to them statically (e.g. called only via RTS-trick dispatch or data-driven jump tables).
+
+For each discovered function, the pass looks at the bytes immediately after its terminator (RTS/RTI/JMP/BRK/STP). If those bytes decode as a valid instruction, they become new BFS seeds. The scan tries up to `--orphan-window` byte offsets past the terminator to skip small inline data gaps between subroutines.
+
+**Why it's needed:** ca65/cc65 output often places subroutines back-to-back with zero padding between them. A tight BFS would stop at each RTS and never look at the next function. The orphan phase recovers these.
+
+**Tuning:**
+- Default window of 3 handles: 0-byte gaps (adjacent functions) and 1–2 byte alignment pads.
+- Use `--orphan-window 16` to also skip over small inline data tables (e.g. a 3-entry jump table) between subroutines.
+- Too large a window risks decoding data bytes as code — check `grep "UNHANDLED" generated/*_full.c` afterwards.
+
+```bash
+# More aggressive orphan discovery:
+make GAME=NesGame ROM=rom/NesGame.nes ORPHAN=16
+# or directly:
+python tools/nesrecomp.py rom/NesGame.nes --game NesGame --orphan-window 16
+```
 
 ### Config Seeds
 
-`cfg/NesGame.cfg` can add extra seeds:
-```
-extra_func = 8120
-extra_func = 81A5
-```
+`cfg/NesGame.cfg` supports four directives (see `cfg/game.cfg.example`):
 
-These come from learning mode or manual analysis.
+| Directive | Purpose |
+|-----------|---------|
+| `extra_func = XXXX` | Force-add entry point — for state machine handlers, learning mode output |
+| `data_region = XXXX,YYYY` | Exclude address range from BFS — prevents phantom functions from inline data |
+| `inline_data_func = XXXX` | Mark subroutine that consumes bytes after JSR as data (PLA/PLA pattern) — BFS skips `pc+3` fallthrough |
+| `jump_table = XXXX,N` | Declare jump table of N entries at XXXX — BFS adds each valid word as a seed |
+
+`extra_func` entries come from learning mode or manual analysis. The other three must be filled manually after inspecting a disassembly.
+
+**TODO:** auto-detect `inline_data_func` and `jump_table` from the ASM parser.
+- `inline_data_func`: subroutines whose first instructions are `PLA / STA $zp / PLA / STA $zp+1`
+- `jump_table`: labels immediately followed by `.word` entries with valid PRG addresses
+
+Requires refactoring `parse_asm_labels` to return structured data instead of `Set[int]`. Fix ASM parser edge cases (bug 3.2) first.
 
 ### Emitted Code Pattern
 

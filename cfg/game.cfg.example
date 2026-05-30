@@ -6,9 +6,25 @@
 #   state machine handlers, etc. not reachable via static BFS)
 #
 # data_region = <hex_start>,<hex_end>
-#   Mark a range as data (prevents decoder from treating it as code)
+#   Mark a range as data — BFS will not decode or enter this range.
+#   Use when orphan phase or manual analysis produces phantom functions
+#   from inline data tables, string literals, etc.
+#
+# inline_data_func = <hex_addr>
+#   Mark a subroutine that consumes the bytes immediately after the
+#   JSR call site as inline data (PLA/PLA pattern, print_string, etc.).
+#   BFS will follow the JSR but will NOT enqueue pc+3 as a code seed,
+#   preventing the inline data from being decoded as instructions.
+#
+# jump_table = <hex_addr>,<count>
+#   Explicitly declare a jump table of <count> word-sized (2-byte) entries
+#   starting at <hex_addr>.  Each entry that looks like a valid PRG address
+#   ($8000–$FFFF) is added as a BFS seed.  Use when the automatic JMP (ind)
+#   heuristic misses a table or when the table is indexed via RTS-trick.
 #
 # Example:
-#   extra_func = E4A0
-#   extra_func = E502
-#   data_region = C100,C200
+#   extra_func    = E4A0
+#   extra_func    = E502
+#   data_region   = C100,C1FF
+#   inline_data_func = 8234
+#   jump_table    = 9800,12

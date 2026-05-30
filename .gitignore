@@ -17,3 +17,4 @@ fm2/*
 .groupedtimelineinclude
 .history/
 .vscode-ctags
+__pycache__/

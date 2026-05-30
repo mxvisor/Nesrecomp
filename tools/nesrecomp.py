@@ -458,6 +458,68 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
             f"  if ((0x{next_pc:04X}u ^ 0x{tgt:04X}u) & 0xFF00u) g_cpu_cycles++;",
             f"  cpu.PC = 0x{tgt:04X}; return; }}",
         ]
+    # -- Undocumented RMW (read-modify-write + register op) --
+    elif mn == "SLO":   # ASL mem + ORA A
+        a = ae()
+        lines += [f"{{ uint8_t _t = mem_read({a}); cpu.C = (_t >> 7) & 1; _t = (uint8_t)(_t << 1); mem_write({a}, _t); cpu.A |= _t; SET_NZ(cpu.A); }}"]
+    elif mn == "RLA":   # ROL mem + AND A
+        a = ae()
+        lines += [f"{{ uint8_t _t = mem_read({a}), _c = cpu.C; cpu.C = (_t >> 7) & 1; _t = (uint8_t)((_t << 1) | _c); mem_write({a}, _t); cpu.A &= _t; SET_NZ(cpu.A); }}"]
+    elif mn == "SRE":   # LSR mem + EOR A
+        a = ae()
+        lines += [f"{{ uint8_t _t = mem_read({a}); cpu.C = _t & 1; _t >>= 1; mem_write({a}, _t); cpu.A ^= _t; SET_NZ(cpu.A); }}"]
+    elif mn == "RRA":   # ROR mem + ADC A (carry from ROR feeds into ADC)
+        a = ae()
+        lines += [
+            f"{{ uint8_t _t = mem_read({a}), _c = cpu.C; cpu.C = _t & 1; _t = (uint8_t)((_t >> 1) | (_c << 7)); mem_write({a}, _t);",
+            "  uint16_t _r = cpu.A + _t + cpu.C;",
+            "  cpu.V = (~(cpu.A ^ _t) & (cpu.A ^ _r) & 0x80) >> 7;",
+            "  cpu.C = (_r > 0xFF) ? 1 : 0; cpu.A = (uint8_t)_r; SET_NZ(cpu.A); }",
+        ]
+    elif mn == "DCP":   # DEC mem + CMP A
+        a = ae()
+        lines += [f"{{ uint8_t _t = (uint8_t)(mem_read({a}) - 1); mem_write({a}, _t); cpu.C = (cpu.A >= _t) ? 1 : 0; SET_NZ((uint8_t)(cpu.A - _t)); }}"]
+    elif mn == "ISB":   # INC mem + SBC A
+        a = ae()
+        lines += [
+            f"{{ uint8_t _t = (uint8_t)(mem_read({a}) + 1); mem_write({a}, _t);",
+            "  uint16_t _r = cpu.A - _t - (1 - cpu.C);",
+            "  cpu.V = ((cpu.A ^ _t) & (cpu.A ^ _r) & 0x80) >> 7;",
+            "  cpu.C = (_r < 0x100) ? 1 : 0; cpu.A = (uint8_t)_r; SET_NZ(cpu.A); }",
+        ]
+    # -- Undocumented immediate ops --
+    elif mn == "ANC":   # AND #imm, C = N
+        lines += [f"cpu.A &= {rd()}; SET_NZ(cpu.A); cpu.C = cpu.N;"]
+    elif mn == "ALR":   # AND #imm + LSR A
+        lines += [f"{{ uint8_t _t = cpu.A & {rd()}; cpu.C = _t & 1; cpu.A = _t >> 1; SET_NZ(cpu.A); }}"]
+    elif mn == "ARR":   # AND #imm + ROR A with special C/V
+        lines += [
+            f"{{ uint8_t _t = cpu.A & {rd()};",
+            "  cpu.A = (uint8_t)((_t >> 1) | (cpu.C << 7));",
+            "  cpu.C = (cpu.A >> 6) & 1; cpu.V = ((cpu.A >> 5) ^ (cpu.A >> 6)) & 1; SET_NZ(cpu.A); }",
+        ]
+    elif mn == "XAA":   # unstable: best-effort A = X & #imm
+        lines += [f"cpu.A = cpu.X & {rd()}; SET_NZ(cpu.A);"]
+    elif mn == "SBX":   # (A & X) - #imm → X, sets C
+        lines += [
+            f"{{ uint16_t _r = (uint16_t)(cpu.A & cpu.X) - {rd()};",
+            "  cpu.C = (_r < 0x100) ? 1 : 0; cpu.X = (uint8_t)_r; SET_NZ(cpu.X); }",
+        ]
+    # -- Undocumented unstable stores --
+    elif mn == "AHX":   # store A & X & (addr_hi + 1)
+        a = ae()
+        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.A & cpu.X & (uint8_t)((_a >> 8) + 1)); }}"]
+    elif mn == "TAS":   # SP = A & X; store SP & (addr_hi + 1)
+        a = ae()
+        lines += [f"{{ cpu.SP = cpu.A & cpu.X; uint16_t _a = {a}; mem_write(_a, cpu.SP & (uint8_t)((_a >> 8) + 1)); }}"]
+    elif mn == "SHY":   # store Y & (addr_hi + 1)
+        a = ae()
+        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.Y & (uint8_t)((_a >> 8) + 1)); }}"]
+    elif mn == "SHX":   # store X & (addr_hi + 1)
+        a = ae()
+        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.X & (uint8_t)((_a >> 8) + 1)); }}"]
+    elif mn == "LAR":   # LDA/LDX/TSX from mem & SP
+        lines += [f"{{ uint8_t _t = mem_read({ae()}) & cpu.SP; cpu.A = cpu.X = cpu.SP = _t; SET_NZ(_t); }}"]
     else:
         lines += [f"/* UNHANDLED {mn} */"]
     return lines
@@ -475,6 +537,8 @@ class Disassembler:
         self.functions: Dict[int, List[Tuple[int, Op, int]]] = {}  # pc -> [(pc,op,operand),...]
         self.extra_funcs: Set[int] = set()
         self.data_regions: Set[range] = set()
+        self.inline_data_funcs: Set[int] = set()
+        self.orphan_window: int = 3
 
     def prg_read(self, addr: int) -> int:
         """Simplified mapper read at CPU address."""
@@ -556,14 +620,35 @@ class Disassembler:
                     tgt = operand & 0xFFFF
                     if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
-                    # JSR return address = pc+3 → RTS will return here
-                    ret = pc + 3
-                    if ret not in visited and not self.is_switchable(ret):
-                        queue.append(ret)
+                    # JSR return address = pc+3 → RTS will return here.
+                    # Skip fallthrough for inline_data_func: these subroutines
+                    # consume the bytes after JSR as data (PLA/PLA pattern),
+                    # so pc+3 is data, not code.
+                    if tgt not in self.inline_data_funcs:
+                        ret = pc + 3
+                        if ret not in visited and not self.is_switchable(ret):
+                            queue.append(ret)
                 elif op.mnemonic == "JMP" and op.mode == "abs":
                     tgt = operand & 0xFFFF
                     if tgt not in visited and not self.is_switchable(tgt):
                         queue.append(tgt)
+                elif op.mnemonic == "JMP" and op.mode == "ind":
+                    # Jump table heuristic: if the pointer lives in ROM, scan
+                    # forward reading word-sized entries while they look like
+                    # valid PRG addresses.  Stops at the first non-PRG word.
+                    ptr = operand & 0xFFFF
+                    if ptr >= 0x8000:
+                        off = 0
+                        while off < 256:  # cap: max 128 table entries
+                            lo = self.prg_read(ptr + off)
+                            hi = self.prg_read(ptr + off + 1)
+                            tgt = lo | (hi << 8)
+                            if 0x8000 <= tgt <= 0xFFFF and not self.is_switchable(tgt):
+                                if tgt not in visited:
+                                    queue.append(tgt)
+                                off += 2
+                            else:
+                                break
                 elif op.mnemonic in BRANCH_OPS:
                     tgt = branch_target(pc, operand)
                     if tgt not in visited and not self.is_switchable(tgt):
@@ -591,15 +676,15 @@ class Disassembler:
         self._bfs(all_seeds, visited)
 
         # Orphan phase: code right after terminators (RTS/RTI/JMP/BRK).
-        # Try up to 3 offset bytes to skip small data gaps between
-        # discovered code and orphan code islands.
+        # Scans up to orphan_window bytes past each terminator to find
+        # code islands separated by small data gaps.
         while True:
             orphans: List[int] = []
             for entry, insns in self.functions.items():
                 last_pc, last_op, _ = insns[-1]
                 if last_op.mnemonic in TERMINATORS:
                     next_pc = last_pc + last_op.size
-                    for off in range(3):
+                    for off in range(self.orphan_window):
                         addr = next_pc + off
                         if addr < 0x8000 or addr >= 0x10000 or self.is_switchable(addr):
                             break
@@ -660,9 +745,12 @@ class CEmitter:
             insns  = self.dis.functions[entry]
 
             lines.append(f'void func_{entry:04X}(void) {{')
-            for pc, op, operand in insns:
+            for idx, (pc, op, operand) in enumerate(insns):
                 comment = f'  /* ${pc:04X}  {op.mnemonic} */'
-                lines.append(f'  cpu.PC = 0x{pc:04X};')
+                # Set cpu.PC only at function entry; control-flow instructions
+                # (JMP/JSR/RTS/RTI/BRK/branches) already update it before return.
+                if idx == 0:
+                    lines.append(f'  cpu.PC = 0x{pc:04X};')
                 stmts = emit_instruction(op, operand, pc, set())
                 if stmts:
                     lines.append(comment)
@@ -727,7 +815,7 @@ class CEmitter:
 # ---------------------------------------------------------------------------
 
 def parse_cfg(path: str) -> dict:
-    cfg = {"extra_func": [], "data_region": []}
+    cfg = {"extra_func": [], "data_region": [], "inline_data_func": [], "jump_table": []}
     if not os.path.exists(path):
         return cfg
     with open(path) as f:
@@ -743,6 +831,11 @@ def parse_cfg(path: str) -> dict:
                 elif k == "data_region":
                     parts = v.split(',')
                     cfg["data_region"].append((int(parts[0],16), int(parts[1],16)))
+                elif k == "inline_data_func":
+                    cfg["inline_data_func"].append(int(v, 16))
+                elif k == "jump_table":
+                    parts = v.split(',')
+                    cfg["jump_table"].append((int(parts[0],16), int(parts[1])))
     return cfg
 
 # ---------------------------------------------------------------------------
@@ -901,6 +994,8 @@ def main():
     ap.add_argument("--asm", default=None, help="ca65 assembly source (extracts labels as entries)")
     ap.add_argument("--out", default="generated", help="Output directory")
     ap.add_argument("--game", default=None, help="Game name prefix (default: rom stem)")
+    ap.add_argument("--orphan-window", type=int, default=3, metavar="N",
+                    help="Bytes past a terminator to scan for orphan code islands (default: 3)")
     args = ap.parse_args()
 
     with open(args.rom, "rb") as f:
@@ -916,10 +1011,20 @@ def main():
     cfg = parse_cfg(args.cfg) if args.cfg else {}
 
     dis = Disassembler(prg, hdr.mapper, hdr.prg_banks)
+    dis.orphan_window = args.orphan_window
     for ea in cfg.get("extra_func", []):
         dis.extra_funcs.add(ea)
     for start, end in cfg.get("data_region", []):
         dis.data_regions.add(range(start, end + 1))
+    for ea in cfg.get("inline_data_func", []):
+        dis.inline_data_funcs.add(ea)
+    for table_addr, count in cfg.get("jump_table", []):
+        for i in range(count):
+            lo = dis.prg_read(table_addr + i * 2)
+            hi = dis.prg_read(table_addr + i * 2 + 1)
+            tgt = lo | (hi << 8)
+            if 0x8000 <= tgt <= 0xFFFF:
+                dis.extra_funcs.add(tgt)
 
     # Entry vectors
     reset = dis.read_vector(0xFFFC)

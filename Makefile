@@ -140,15 +140,17 @@ gen_embed:
 #   ROM     — optional, defaults to rom/$(GAME).nes
 #   ASM     — optional, defaults to asm/$(GAME).asm if that file exists
 #   CFG     — always cfg/$(GAME).cfg
-ROM     ?= rom/$(GAME).nes
-ASM_FLAG = $(if $(ASM),--asm asm/$(ASM),$(if $(wildcard asm/$(GAME).asm),--asm asm/$(GAME).asm))
+#   ORPHAN  — orphan-window size (default 3); increase to find more orphan code
+ROM          ?= rom/$(GAME).nes
+ASM_FLAG      = $(if $(ASM),--asm asm/$(ASM),$(if $(wildcard asm/$(GAME).asm),--asm asm/$(GAME).asm))
+ORPHAN_FLAG   = $(if $(ORPHAN),--orphan-window $(ORPHAN))
 
 recomp:
 ifndef GAME
 	$(error GAME not set. Usage: make GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) tools/nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG)
+	$(PYTHON) tools/nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG) $(ORPHAN_FLAG)
 	$(MAKE) compile GAME=$(GAME)
 
 # Clean
