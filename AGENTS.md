@@ -20,7 +20,7 @@ NESRecomp is a **static recompiler for NES ROM files**. It converts 6502 machine
 ```
 ROM file
    ↓
-nesrecomp.py          — BFS static disassembler → emits C
+tools/nesrecomp.py    — BFS static disassembler → emits C
    ↓
 generated/
   NesGame_full.c         — one void func_XXXX(void) per discovered block
@@ -48,7 +48,7 @@ Every recompiled function ends with `return` after each control-flow instruction
 
 | File | Purpose |
 |------|---------|
-| `nesrecomp.py` | Static recompiler — BFS discovery + C code emitter |
+| `tools/nesrecomp.py` | Static recompiler — BFS discovery + C code emitter |
 | `runner.c / runner.h` | Main loop, SDL2 window, input, save states, FM2 TAS, interrupts |
 | `memory.c` | CPU address map ($0000–$FFFF): RAM, PPU regs, APU I/O, ROM |
 | `cpu_interp.c` | Full 6502 interpreter fallback (step and run modes) |
@@ -60,12 +60,12 @@ Every recompiled function ends with `return` after each control-flow instruction
 | `rom/NesGame.nes` | NES ROM files (not in git — local copies) |
 | `asm/NesGame.s` | Optional ca65 assembly for label-based discovery (not in git) |
 | `fm2/NesGame.fm2` | Optional FCEUX TAS file for playback-based discovery (not in git) |
-| `tools/extract_nes_data.py` | ROM parser → embedded data header/source |
+| `tools/extract_rom_data.py` | ROM parser → embedded data header/source |
 | `generated/` | Auto-generated files — do not edit manually |
 
 ---
 
-## Static Recompiler (nesrecomp.py)
+## Static Recompiler (tools/nesrecomp.py)
 
 ### Discovery (BFS)
 
@@ -180,7 +180,7 @@ Format: FCEUX FM2 (text). Each line `|skip|P1|P2|` describes one frame. Parser: 
 
 ### `asm/`
 
-ca65 assembly files with labels for specific games. Used during recompilation (`--asm`) to give `nesrecomp.py` function names and extra entry points from manual disassembly.
+ca65 assembly files with labels for specific games. Used during recompilation (`--asm`) to give `tools/nesrecomp.py` function names and extra entry points from manual disassembly.
 
 ```bash
 make ROM=rom/NesGame.nes GAME=NesGame ASM=NesGame.asm
@@ -279,7 +279,7 @@ Work in `ppu.c`. Key timing: 341 dots/scanline, 262 scanlines/frame. Pixel outpu
 Edit `cpu_interp.c`. All opcodes follow the same pattern: decode addressing mode, execute, update flags, increment PC, accumulate cycles.
 
 ### Adding a new opcode to the recompiler
-Edit `nesrecomp.py` in the instruction emission section. Match the C pattern used in `cpu_interp.c`.
+Edit `tools/nesrecomp.py` in the instruction emission section. Match the C pattern used in `cpu_interp.c`.
 
 ### Debugging a dispatch miss
 Enable `RECOMP_LEARN=1`, run headless, check the generated `cfg/NesGame.cfg` for new addresses. Re-run `make GAME=NesGame`.

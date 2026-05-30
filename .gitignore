@@ -7,9 +7,9 @@ asm/*
 fm2/*
 !rom/.gitkeep
 !cfg/.gitkeep
+!cfg/game.cfg.example
 !asm/.gitkeep
 !fm2/.gitkeep
-docs/
 *.png
 *.ppm
 *.log

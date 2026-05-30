@@ -4,11 +4,11 @@ Static recompilation of NES games to native C code. No interpreter hot loop — 
 
 ## How it works
 
-1. **Discoverer** (`nesrecomp.py`) — BFS from RESET/NMI/IRQ vectors, follows JSR/JMP abs/branches, groups sequential instructions into functions, emits C code
+1. **Discoverer** (`tools/nesrecomp.py`) — BFS from RESET/NMI/IRQ vectors, follows JSR/JMP abs/branches, groups sequential instructions into functions, emits C code
 2. **Emitter** — each function becomes a `void func_XXXX(void)` that sets `cpu.PC`, adds `g_cpu_cycles`, executes the instruction, and `return`s on any control-flow instruction
 3. **Dispatch table** — `call_by_address(addr)` switch over all discovered function entries; the default case runs one instruction via the interpreter
 4. **Main loop** (`runner.c`) — dispatches one instruction per iteration, then steps PPU (×3) and APU for the accumulated cycles before dispatching the next instruction
-5. **ROM data** is embedded at compile time — no external ROM file needed at runtime
+5. **ROM data** is embedded at compile time by `tools/extract_rom_data.py` (ROM → C header/source) — no external ROM file needed at runtime
 
 ## Features
 
@@ -48,7 +48,7 @@ make GAME=MyGame ROM=/path/to/game.nes
 
 If `asm/MyGame.asm` exists it is picked up automatically. The config `cfg/MyGame.cfg` is always used if present.
 
-The `.asm` file is a **ca65 assembly source** (e.g. from a manual disassembly session in Ghidra, IDA, or da65). `nesrecomp.py` extracts every labeled address ≥ `$8000` and adds them as extra BFS seeds — useful for entry points that static analysis can't reach on its own, such as indirect jump targets and data-driven dispatch tables.
+The `.asm` file is a **ca65 assembly source** (e.g. from a manual disassembly session in Ghidra, IDA, or da65). `tools/nesrecomp.py` extracts every labeled address ≥ `$8000` and adds them as extra BFS seeds — useful for entry points that static analysis can't reach on its own, such as indirect jump targets and data-driven dispatch tables.
 
 You can also pass it explicitly:
 
@@ -121,7 +121,6 @@ On each frame (`NMI`) the controller state is loaded from the next FM2 line. The
 ## Project Structure
 
 ```
-nesrecomp.py          — static recompiler / discoverer / C emitter
 runner.c / runner.h   — SDL loop, input, audio, save states
 cpu_interp.c          — 6502 interpreter (fallback)
 ppu.c / ppu.h         — PPU 2C02 emulation
@@ -130,7 +129,8 @@ mapper.c / mapper.h   — mapper logic (MMC1, UNROM, CNROM, MMC3)
 memory.c              — CPU address map, controller I/O
 include/              — shared headers (cpu, ppu, apu, mapper, interrupts)
 generated/            — per-game recompiled C files + embedded ROM data (auto-generated)
-tools/                — extract_nes_data.py (ROM → embedded C header/source)
+tools/nesrecomp.py    — static recompiler / discoverer / C emitter
+tools/extract_rom_data.py — ROM parser → embedded C header/source
 
 rom/                  — NES ROM files (.nes) — not tracked by git
 cfg/                  — per-game extra entry point config (learning mode output)

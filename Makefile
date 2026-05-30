@@ -132,7 +132,7 @@ dirs:
 
 # Generate embedded data from ROM
 gen_embed:
-	$(PYTHON) tools/extract_nes_data.py $(ROM) --game $(GAME) --out generated
+	$(PYTHON) tools/extract_rom_data.py $(ROM) --game $(GAME) --out generated
 
 
 # Recompile ROM, then build
@@ -148,7 +148,7 @@ ifndef GAME
 	$(error GAME not set. Usage: make GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG)
+	$(PYTHON) tools/nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG)
 	$(MAKE) compile GAME=$(GAME)
 
 # Clean

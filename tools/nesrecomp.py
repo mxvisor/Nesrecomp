@@ -62,6 +62,7 @@ class Op:
     mode: str       # addr mode abbreviation
     size: int       # bytes (including opcode)
     cycles: int
+    page_cross: bool = False
 
 # Addressing modes:
 #  imp  = implied/accumulator
@@ -240,6 +241,22 @@ OPTABLE.update(_MORE_UNDOC)
 TERMINATORS = {"RTS", "RTI", "JMP", "BRK", "STP"}
 BRANCH_OPS  = {"BCC","BCS","BEQ","BNE","BMI","BPL","BVC","BVS"}
 
+# Opcodes that add +1 cycle when the effective address crosses a page boundary.
+# STA/STX/STY indexed modes always pay the extra cycle (already in cycles field).
+_PAGE_CROSS_OPCODES = {
+    0xBD, 0xB9, 0xB1,  # LDA abx/aby/izy
+    0xBE,              # LDX aby
+    0xBC,              # LDY abx
+    0x7D, 0x79, 0x71,  # ADC abx/aby/izy
+    0xFD, 0xF9, 0xF1,  # SBC abx/aby/izy
+    0x3D, 0x39, 0x31,  # AND abx/aby/izy
+    0x1D, 0x19, 0x11,  # ORA abx/aby/izy
+    0x5D, 0x59, 0x51,  # EOR abx/aby/izy
+    0xDD, 0xD9, 0xD1,  # CMP abx/aby/izy
+}
+for _opc in _PAGE_CROSS_OPCODES:
+    OPTABLE[_opc].page_cross = True
+
 # ---------------------------------------------------------------------------
 # CPU state & C emission helpers
 # ---------------------------------------------------------------------------
@@ -311,23 +328,43 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
     elif mn == "PHP": lines += ["stack_push(get_P() | 0x30);"]
     elif mn == "PLP": lines += ["set_P(stack_pop());"]
     elif mn == "ADC":
-        lines += [
-            f"{{ uint16_t r = cpu.A + {rd()} + cpu.C;",
-            "  cpu.V = (~(cpu.A ^ " + rd() + ") & (cpu.A ^ r) & 0x80) >> 7;" if m=="imm"
-                else "  { uint8_t _v=" + rd() + "; cpu.V = (~(cpu.A ^ _v) & (cpu.A ^ r) & 0x80) >> 7; }",
-            "  cpu.C = (r > 0xFF) ? 1 : 0;",
-            "  cpu.A = (uint8_t)r;",
-            "  SET_NZ(cpu.A); }",
-        ]
+        if m == "imm":
+            v = rd()
+            lines += [
+                f"{{ uint16_t r = cpu.A + {v} + cpu.C;",
+                f"  cpu.V = (~(cpu.A ^ {v}) & (cpu.A ^ r) & 0x80) >> 7;",
+                "  cpu.C = (r > 0xFF) ? 1 : 0;",
+                "  cpu.A = (uint8_t)r;",
+                "  SET_NZ(cpu.A); }",
+            ]
+        else:
+            lines += [
+                f"{{ uint8_t _v = {rd()};",
+                "  uint16_t r = cpu.A + _v + cpu.C;",
+                "  cpu.V = (~(cpu.A ^ _v) & (cpu.A ^ r) & 0x80) >> 7;",
+                "  cpu.C = (r > 0xFF) ? 1 : 0;",
+                "  cpu.A = (uint8_t)r;",
+                "  SET_NZ(cpu.A); }",
+            ]
     elif mn == "SBC":
-        lines += [
-            f"{{ uint16_t r = cpu.A - {rd()} - (1 - cpu.C);",
-            "  cpu.V = ((cpu.A ^ " + rd() + ") & (cpu.A ^ r) & 0x80) >> 7;" if m=="imm"
-                else "  { uint8_t _v=" + rd() + "; cpu.V = ((cpu.A ^ _v) & (cpu.A ^ r) & 0x80) >> 7; }",
-            "  cpu.C = (r < 0x100) ? 1 : 0;",
-            "  cpu.A = (uint8_t)r;",
-            "  SET_NZ(cpu.A); }",
-        ]
+        if m == "imm":
+            v = rd()
+            lines += [
+                f"{{ uint16_t r = cpu.A - {v} - (1 - cpu.C);",
+                f"  cpu.V = ((cpu.A ^ {v}) & (cpu.A ^ r) & 0x80) >> 7;",
+                "  cpu.C = (r < 0x100) ? 1 : 0;",
+                "  cpu.A = (uint8_t)r;",
+                "  SET_NZ(cpu.A); }",
+            ]
+        else:
+            lines += [
+                f"{{ uint8_t _v = {rd()};",
+                "  uint16_t r = cpu.A - _v - (1 - cpu.C);",
+                "  cpu.V = ((cpu.A ^ _v) & (cpu.A ^ r) & 0x80) >> 7;",
+                "  cpu.C = (r < 0x100) ? 1 : 0;",
+                "  cpu.A = (uint8_t)r;",
+                "  SET_NZ(cpu.A); }",
+            ]
     elif mn == "AND":
         lines += [f"cpu.A &= {rd()};", "SET_NZ(cpu.A);"]
     elif mn == "ORA":
@@ -378,10 +415,10 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
     elif mn == "CLV": lines += ["cpu.V = 0;"]
     elif mn == "NOP": lines += ["/* NOP */"]
     elif mn == "BRK":
-        lines += ["cpu.PC++;",
+        lines += ["cpu.PC += 2;",
                    "stack_push((cpu.PC >> 8) & 0xFF);",
                    "stack_push(cpu.PC & 0xFF);",
-                   "stack_push(get_P() | 0x10);",
+                   "stack_push(get_P() | 0x30);",
                    "cpu.I = 1;",
                    "cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);",
                     "return;"]
@@ -408,13 +445,19 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
                    "return;"]
     elif mn in BRANCH_OPS:
         tgt = branch_target(pc, operand)
+        next_pc = pc + 2
         cond = {
             "BCC": "!cpu.C", "BCS": "cpu.C",
             "BEQ": "cpu.Z",  "BNE": "!cpu.Z",
             "BMI": "cpu.N",  "BPL": "!cpu.N",
             "BVC": "!cpu.V", "BVS": "cpu.V",
         }[mn]
-        lines += [f"if ({cond}) {{ cpu.PC = 0x{tgt:04X}; return; }}"]
+        lines += [
+            f"if ({cond}) {{",
+            "  g_cpu_cycles += 1;",
+            f"  if ((0x{next_pc:04X}u ^ 0x{tgt:04X}u) & 0xFF00u) g_cpu_cycles++;",
+            f"  cpu.PC = 0x{tgt:04X}; return; }}",
+        ]
     else:
         lines += [f"/* UNHANDLED {mn} */"]
     return lines
@@ -492,6 +535,8 @@ class Disassembler:
                 continue
             # MMC3: skip switchable banks — handled by interpreter at runtime
             if self.is_switchable(entry):
+                continue
+            if any(entry in r for r in self.data_regions):
                 continue
             visited.add(entry)
 
@@ -622,6 +667,13 @@ class CEmitter:
                 if stmts:
                     lines.append(comment)
                     lines.append(f'  g_cpu_cycles += {op.cycles};')
+                    if op.page_cross:
+                        if op.mode == 'abx':
+                            lines.append(f'  if ((0x{operand & 0xFF:02X} + cpu.X) > 0xFF) g_cpu_cycles++;')
+                        elif op.mode == 'aby':
+                            lines.append(f'  if ((0x{operand & 0xFF:02X} + cpu.Y) > 0xFF) g_cpu_cycles++;')
+                        elif op.mode == 'izy':
+                            lines.append(f'  if ((mem_read(0x{operand:02X}) + cpu.Y) > 0xFF) g_cpu_cycles++;')
                     for s in stmts:
                         lines.append(f'  {s}')
             lines.append('}')
@@ -866,6 +918,8 @@ def main():
     dis = Disassembler(prg, hdr.mapper, hdr.prg_banks)
     for ea in cfg.get("extra_func", []):
         dis.extra_funcs.add(ea)
+    for start, end in cfg.get("data_region", []):
+        dis.data_regions.add(range(start, end + 1))
 
     # Entry vectors
     reset = dis.read_vector(0xFFFC)
