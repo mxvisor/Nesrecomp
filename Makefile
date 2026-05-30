@@ -111,9 +111,11 @@ CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
 #  Targets
 # ============================================================
 
-.PHONY: all clean recomp dirs
+.PHONY: all compile clean recomp dirs
 
-all: dirs $(TARGET)
+all: recomp
+
+compile: dirs $(TARGET)
 
 $(TARGET): $(OBJS)
 	@echo [LINK] $@
@@ -134,20 +136,20 @@ gen_embed:
 
 
 # Recompile ROM, then build
-# Usage: make recomp GAME=NesGame
-#   ROM     — optional, defaults to roms/$(GAME).nes
+# Usage: make GAME=NesGame  (or: make recomp GAME=NesGame)
+#   ROM     — optional, defaults to rom/$(GAME).nes
 #   ASM     — optional, defaults to asm/$(GAME).asm if that file exists
 #   CFG     — always cfg/$(GAME).cfg
-ROM     ?= roms/$(GAME).nes
+ROM     ?= rom/$(GAME).nes
 ASM_FLAG = $(if $(ASM),--asm asm/$(ASM),$(if $(wildcard asm/$(GAME).asm),--asm asm/$(GAME).asm))
 
 recomp:
 ifndef GAME
-	$(error GAME not set. Usage: make recomp GAME=NesGame)
+	$(error GAME not set. Usage: make GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
 	$(PYTHON) nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG)
-	$(MAKE) GAME=$(GAME)
+	$(MAKE) compile GAME=$(GAME)
 
 # Clean
 clean:

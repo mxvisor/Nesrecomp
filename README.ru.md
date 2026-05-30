@@ -35,18 +35,26 @@ sudo apt install build-essential libsdl2-dev python3 make git
 git clone <url> nesrecomp
 cd nesrecomp
 
-# Положить ROM в roms/MyGame.nes, затем:
-make recomp GAME=MyGame
+# Положить ROM в rom/MyGame.nes, затем:
+make GAME=MyGame
 ./bin/MyGame
 ```
 
-`ROM` по умолчанию равен `roms/$(GAME).nes`. Если ROM находится в другом месте, передайте его явно:
+`ROM` по умолчанию равен `rom/$(GAME).nes`. Если ROM находится в другом месте, передайте его явно:
 
 ```bash
-make recomp GAME=MyGame ROM=/path/to/game.nes
+make GAME=MyGame ROM=/path/to/game.nes
 ```
 
 Если существует файл `asm/MyGame.asm` — он подхватывается автоматически. Конфиг `cfg/MyGame.cfg` всегда используется, если присутствует.
+
+Файл `.asm` — это **исходник ca65** (например, из сессии ручного дизассемблирования в Ghidra, IDA или da65). `nesrecomp.py` извлекает все адреса с метками ≥ `$8000` и добавляет их как дополнительные точки входа для BFS — полезно для кода, недостижимого при статическом анализе: целей косвенных переходов и таблиц диспетчеризации на основе данных.
+
+Можно передать явно:
+
+```bash
+make GAME=MyGame ASM=MyGame.asm
+```
 
 ### Windows (MinGW)
 
@@ -54,7 +62,7 @@ make recomp GAME=MyGame ROM=/path/to/game.nes
 # Установить MSYS2 с mingw-w64-x86_64-gcc, SDL2, make, python
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-make recomp GAME=MyGame
+make GAME=MyGame
 ./bin/MyGame.exe
 ```
 
@@ -62,7 +70,7 @@ make recomp GAME=MyGame
 
 ```bash
 sudo apt install gcc-mingw-w64-i686
-make CROSS=1 recomp GAME=MyGame
+make CROSS=1 GAME=MyGame
 # создаёт bin/MyGame.exe (Windows PE)
 ```
 
@@ -79,7 +87,7 @@ RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame
 Затем перекомпилировать — конфиг подхватывается автоматически:
 
 ```bash
-make recomp GAME=MyGame
+make GAME=MyGame
 ```
 
 Запускать повторно — каждая сессия дополняет предыдущий `cfg/MyGame.cfg`. В итоге весь достижимый код попадёт в таблицу диспетчеризации.
@@ -120,9 +128,14 @@ ppu.c / ppu.h         — эмуляция PPU 2C02
 apu.c / apu.h         — эмуляция APU (прямоугольные, треугольный, шум, DMC)
 mapper.c / mapper.h   — логика маперов (MMC1, UNROM, CNROM, MMC3)
 memory.c              — карта адресов CPU, ввод-вывод контроллеров
-include/              — рефакторинговые заголовки
-generated/            — рекомпилированные C-файлы и встроенные данные для каждой игры
-tools/                — extract_nes_data.py (используется Makefile)
+include/              — общие заголовки (cpu, ppu, apu, mapper, interrupts)
+generated/            — рекомпилированные C-файлы и встроенные данные ROM (авто-генерация)
+tools/                — extract_nes_data.py (ROM → встроенный C-заголовок/исходник)
+
+rom/                  — NES ROM-файлы (.nes) — не отслеживаются git
+cfg/                  — конфиг дополнительных точек входа для каждой игры (вывод режима обучения)
+asm/                  — исходники ca65 для посева BFS по меткам — не отслеживаются git
+fm2/                  — TAS-файлы FCEUX для автоматизированного обнаружения — не отслеживаются git
 ```
 
 ## Поддерживаемые маперы

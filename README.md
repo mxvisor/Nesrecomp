@@ -35,18 +35,26 @@ sudo apt install build-essential libsdl2-dev python3 make git
 git clone <url> nesrecomp
 cd nesrecomp
 
-# Place your ROM in roms/MyGame.nes, then:
-make recomp GAME=MyGame
+# Place your ROM in rom/MyGame.nes, then:
+make GAME=MyGame
 ./bin/MyGame
 ```
 
-`ROM` defaults to `roms/$(GAME).nes`. If your ROM is elsewhere, pass it explicitly:
+`ROM` defaults to `rom/$(GAME).nes`. If your ROM is elsewhere, pass it explicitly:
 
 ```bash
-make recomp GAME=MyGame ROM=/path/to/game.nes
+make GAME=MyGame ROM=/path/to/game.nes
 ```
 
 If `asm/MyGame.asm` exists it is picked up automatically. The config `cfg/MyGame.cfg` is always used if present.
+
+The `.asm` file is a **ca65 assembly source** (e.g. from a manual disassembly session in Ghidra, IDA, or da65). `nesrecomp.py` extracts every labeled address ≥ `$8000` and adds them as extra BFS seeds — useful for entry points that static analysis can't reach on its own, such as indirect jump targets and data-driven dispatch tables.
+
+You can also pass it explicitly:
+
+```bash
+make GAME=MyGame ASM=MyGame.asm
+```
 
 ### Windows (MinGW)
 
@@ -54,7 +62,7 @@ If `asm/MyGame.asm` exists it is picked up automatically. The config `cfg/MyGame
 # Install MSYS2 with mingw-w64-x86_64-gcc, SDL2, make, python
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make python
 
-make recomp GAME=MyGame
+make GAME=MyGame
 ./bin/MyGame.exe
 ```
 
@@ -62,7 +70,7 @@ make recomp GAME=MyGame
 
 ```bash
 sudo apt install gcc-mingw-w64-i686
-make CROSS=1 recomp GAME=MyGame
+make CROSS=1 GAME=MyGame
 # produces bin/MyGame.exe (Windows PE)
 ```
 
@@ -79,7 +87,7 @@ RECOMP_LEARN=1 GAME=MyGame ./bin/MyGame
 Then recompile — the config is picked up automatically:
 
 ```bash
-make recomp GAME=MyGame
+make GAME=MyGame
 ```
 
 Run repeatedly — each session builds on the previous `cfg/MyGame.cfg`. Eventually all reachable code is in the dispatch table.
@@ -120,9 +128,14 @@ ppu.c / ppu.h         — PPU 2C02 emulation
 apu.c / apu.h         — APU emulation (pulse, triangle, noise, DMC)
 mapper.c / mapper.h   — mapper logic (MMC1, UNROM, CNROM, MMC3)
 memory.c              — CPU address map, controller I/O
-include/              — refactored headers
-generated/            — per-game recompiled C files + embedded data
-tools/                — extract_nes_data.py (used by Makefile)
+include/              — shared headers (cpu, ppu, apu, mapper, interrupts)
+generated/            — per-game recompiled C files + embedded ROM data (auto-generated)
+tools/                — extract_nes_data.py (ROM → embedded C header/source)
+
+rom/                  — NES ROM files (.nes) — not tracked by git
+cfg/                  — per-game extra entry point config (learning mode output)
+asm/                  — ca65 assembly sources for label-based BFS seeding — not tracked by git
+fm2/                  — FCEUX TAS movie files for automated discovery — not tracked by git
 ```
 
 ## Supported Mappers
