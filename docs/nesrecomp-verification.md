@@ -474,7 +474,7 @@ JumpTable:
 | 1 | MMC1 | Zelda (The Legend of Zelda) | 128 КБ | CHR-RAM | ✅ | Switchable PRG, CHR-RAM, battery save |
 | 2 | UNROM | Mermaid (The Little Mermaid) | 128 КБ | CHR-RAM | ✅ | Switchable PRG для не-MMC3 |
 | 3 | CNROM | Adventure (Adventure Island) | 32 КБ | 32 КБ ROM | ✅ | PRG фиксирован, переключается CHR |
-| 4 | MMC3 | Captain / Felix / Superc / Contraf | 128 КБ | 128 КБ ROM | ✅ | Bank switching + scanline IRQ |
+| 4 | MMC3 | Felix (Felix the Cat) | 128 КБ | 128 КБ ROM | ✅ | Bank switching + scanline IRQ |
 | 5 | MMC5 | Castlevania3 (Castlevania 3) | 128 КБ | CHR-ROM | ✅ | ExRAM, multiplier, in-frame IRQ |
 
 #### Чеклист тестирования по этим играм
@@ -532,7 +532,7 @@ JumpTable:
   «один статический образ PRG» **корректна для CNROM**
   (свапается только CHR).
 
-**Captain / Felix / Superc / Contraf (MMC3)** — тяжёлый кейс.
+**Felix the Cat (MMC3)** — тяжёлый кейс.
 - [ ] Бенчмарк FPS без vsync-капа. Сравнить с Battle City и SMB1
   в тех же условиях. Если разница в 1.5–3× — bank-aware
   рекомпиляция окупится (см. **2.1**).
@@ -576,7 +576,7 @@ JumpTable:
 #### Порядок прогона
 
 Рекомендуемая последовательность: **Battle City → SMB1 → Adventure
-Island → Mega Man → Zelda → SMB3**.
+Island → Mermaid → Zelda → Felix → Castlevania3**.
 
 Если на каком-то шаге что-то ломается, проблема локализована до
 конкретного маппер-features:
@@ -585,10 +585,10 @@ Island → Mega Man → Zelda → SMB3**.
   при `prg_banks == 1`;
 - работает Battle City и SMB1, ломается Adventure Island → CHR-banking
   в маппер-обработчике;
-- работает CNROM, ломается Mega Man → switchable PRG для не-MMC3;
-- работает Mega Man, ломается Zelda → специфика MMC1 (serial
+- работает CNROM, ломается Mermaid → switchable PRG для не-MMC3;
+- работает Mermaid, ломается Zelda → специфика MMC1 (serial
   register, CHR-RAM, battery save);
-- работают все NROM/UNROM/MMC1/CNROM, ломается SMB3 → MMC3
+- работают все NROM/UNROM/MMC1/CNROM, ломается Felix → MMC3
   scanline IRQ или специфика TKROM.
 
 ### Покрытие и источники seed-ов
