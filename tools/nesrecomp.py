@@ -544,6 +544,29 @@ class Disassembler:
         """Simplified mapper read at CPU address."""
         if addr < 0x8000 or addr > 0xFFFF:
             return 0xFF
+        # MMC5: 8KB bank mode (default mode 3) — last 8KB always at $E000-$FFFF
+        if self.mapper == 5:
+            if addr >= 0xE000:
+                bank_8k = self.prg_banks * 2 - 1
+                offset = bank_8k * 0x2000 + (addr - 0xE000)
+            else:
+                # switchable banks — return flat offset (will be caught by is_switchable)
+                offset = addr - 0x8000
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
+        # MMC1: $C000-$FFFF = fixed last 16KB bank; $8000-$BFFF = switchable (caught by is_switchable)
+        if self.mapper == 1:
+            if addr >= 0xC000:
+                offset = (self.prg_banks - 1) * 0x4000 + (addr - 0xC000)
+            else:
+                offset = addr - 0x8000  # switchable — caller checks is_switchable
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
+        # UNROM: $C000-$FFFF = fixed last 16KB bank
+        if self.mapper == 2:
+            if addr >= 0xC000:
+                offset = (self.prg_banks - 1) * 0x4000 + (addr - 0xC000)
+            else:
+                offset = addr - 0x8000  # switchable
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
         # MMC3: 8KB bank granularity with two switchable slots and two fixed slots
         if self.mapper == 4:
             if addr >= 0xE000:
@@ -568,8 +591,20 @@ class Disassembler:
         return self.prg[offset] if offset < len(self.prg) else 0xFF
 
     def is_switchable(self, addr: int) -> bool:
-        """For MMC3: $8000-$BFFF can switch banks at runtime."""
-        return self.mapper == 4 and 0x8000 <= addr < 0xC000
+        """Return True if address is in a bank-switchable PRG region."""
+        if self.mapper == 1:
+            # MMC1 prg_mode 3 (default): $8000-$BFFF switchable, $C000-$FFFF fixed last
+            # prg_mode 2: $8000-$BFFF fixed first, $C000-$FFFF switchable
+            # We conservatively mark $8000-$BFFF as switchable (most common mode)
+            return 0x8000 <= addr < 0xC000
+        if self.mapper == 2:
+            # UNROM: $8000-$BFFF switchable, $C000-$FFFF fixed last
+            return 0x8000 <= addr < 0xC000
+        if self.mapper == 4:
+            return 0x8000 <= addr < 0xC000
+        if self.mapper == 5:
+            return 0x8000 <= addr < 0xE000  # $E000-$FFFF always fixed
+        return False
 
     def read_vector(self, addr: int) -> int:
         lo = self.prg_read(addr)
@@ -842,145 +877,10 @@ def parse_cfg(path: str) -> dict:
 # ASM label parser (ca65 format)
 # ---------------------------------------------------------------------------
 
-# Build mnemonic->[(mode, size)] lookup from OPTABLE
-ASM_INSNS: Dict[str, List[Tuple[str, int]]] = {}
-for opcode, op in OPTABLE.items():
-    ASM_INSNS.setdefault(op.mnemonic, []).append((op.mode, op.size))
+from asm_parser import parse_asm_labels as _parse_asm_labels
 
 def parse_asm_labels(path: str) -> Set[int]:
-    """Parse ca65 asm file, return set of code addresses (labels >= $8000)."""
-    if not os.path.exists(path):
-        print(f"[nesrecomp] ASM file not found: {path}")
-        return set()
-
-    labels: Set[int] = set()
-    pc: int = 0
-    in_code = False
-    code_org: Optional[int] = None
-
-    with open(path) as f:
-        for line in f:
-            raw = line
-            # strip comments
-            if ';' in line:
-                line = line[:line.index(';')]
-            line = line.strip()
-            if not line:
-                continue
-
-            # .org directive
-            if line.startswith('.org'):
-                try:
-                    val_str = line.split()[-1]
-                    org = int(val_str.replace('$', ''), 16)
-                except ValueError:
-                    continue
-                if org >= 0x8000:
-                    code_org = org
-                    pc = org
-                    in_code = True
-                continue
-
-            # .segment directive
-            if '.segment' in line:
-                # Only enter code/PRG segments
-                in_code = '"CODE"' in line or '"PRG"' in line or '"HEADER"' in line
-                if in_code and code_org is not None:
-                    pc = code_org
-                continue
-
-            if not in_code:
-                continue
-
-            # Extract label (handle label: instruction, label: only, etc.)
-            label = None
-            instr_part = line
-            if ':' in line:
-                parts = line.split(':', 1)
-                label_candidate = parts[0].strip()
-                if label_candidate and label_candidate[0].isalpha():
-                    label = label_candidate
-                instr_part = parts[1].strip() if len(parts) > 1 else ''
-            else:
-                instr_part = line
-
-            # Record label
-            if label:
-                labels.add(pc)
-
-            # Determine byte size of this line
-            instr_upper = instr_part.upper()
-
-            if not instr_part:
-                size = 0
-            elif instr_upper.startswith('.BYTE') or instr_upper.startswith('.DB'):
-                # Count comma-separated expressions; strings count as their length
-                rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
-                size = 0
-                if rest.startswith('"') or rest.startswith("'"):
-                    # String literal
-                    quote = rest[0]
-                    end = rest.find(quote, 1)
-                    if end > 0:
-                        size = end
-                    else:
-                        size = 1
-                else:
-                    size = rest.count(',') + 1 if rest else 1
-            elif instr_upper.startswith('.WORD') or instr_upper.startswith('.ADDR') or instr_upper.startswith('.DW'):
-                rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
-                size = (rest.count(',') + 1) * 2 if rest else 2
-            elif instr_upper.startswith('.RES') or instr_upper.startswith('.DS'):
-                try:
-                    rest = instr_part.split(None, 1)[1] if ' ' in instr_part else ''
-                    size = int(rest.split(',')[0])
-                except (ValueError, IndexError):
-                    size = 1
-            else:
-                # Try to match as a 6502 instruction
-                mn = instr_part.split()[0].upper() if instr_part else ''
-                size = 0
-                if mn in ASM_INSNS:
-                    # Use the largest size for this mnemonic (worst case)
-                    # Better: try to guess from operand format
-                    op_part = instr_part[len(mn):].strip() if len(instr_part) > len(mn) else ''
-                    matched = False
-                    for mode, sz in ASM_INSNS[mn]:
-                        if mode == 'imp' and not op_part:
-                            size = sz; matched = True; break
-                        elif mode == 'imm' and op_part.startswith('#'):
-                            size = sz; matched = True; break
-                        elif mode == 'zp' and not op_part.startswith('#') and ',' not in op_part:
-                            # Could be zp or abs — assume abs=3 if operand looks 4-digit
-                            try:
-                                val = int(op_part.replace('$',''), 16)
-                                size = 2 if val < 0x100 else 3
-                            except:
-                                size = 3
-                            matched = True; break
-                        elif mode in ('zpx', 'abx') and ',X' in op_part.upper():
-                            size = sz; matched = True; break
-                        elif mode in ('zpy', 'aby') and ',Y' in op_part.upper():
-                            size = sz; matched = True; break
-                        elif mode == 'abs' and not op_part.startswith('#') and ',' not in op_part:
-                            size = 3; matched = True; break
-                        elif mode == 'ind' and '(' in op_part:
-                            size = 3; matched = True; break
-                        elif mode == 'izx' and '(' in op_part and ',X' in op_part.upper():
-                            size = 2; matched = True; break
-                        elif mode == 'izy' and '(' in op_part and ',Y' in op_part.upper():
-                            size = 2; matched = True; break
-                        elif mode == 'rel':
-                            size = 2; matched = True; break
-                    if not matched:
-                        size = 3  # safe default
-                else:
-                    size = 3  # unknown instruction, assume 3 bytes
-
-            pc += size
-
-    print(f"[nesrecomp] ASM: {len(labels)} labels >= $8000 from {path}")
-    return labels
+    return _parse_asm_labels(path, OPTABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -991,7 +891,6 @@ def main():
     ap = argparse.ArgumentParser(description="NES Static Recompiler")
     ap.add_argument("rom",  help=".nes ROM file")
     ap.add_argument("--cfg", default=None, help="Config file (optional)")
-    ap.add_argument("--asm", default=None, help="ca65 assembly source (extracts labels as entries)")
     ap.add_argument("--out", default="generated", help="Output directory")
     ap.add_argument("--game", default=None, help="Game name prefix (default: rom stem)")
     ap.add_argument("--orphan-window", type=int, default=3, metavar="N",
@@ -1034,13 +933,6 @@ def main():
 
     seeds = [reset, nmi, irq]
     seeds += cfg.get("extra_func", [])
-
-    # ASM labels
-    if args.asm:
-        asm_labels = parse_asm_labels(args.asm)
-        for a in asm_labels:
-            dis.extra_funcs.add(a)
-        seeds += list(asm_labels)
 
     dis.discover(seeds)
 

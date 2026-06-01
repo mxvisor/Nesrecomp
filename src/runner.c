@@ -1,4 +1,5 @@
 #include "runner.h"
+#include "fm2_player.h"
 #include <SDL2/SDL.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -16,11 +17,6 @@ static void handle_sigterm(int sig) {
 static int g_headless = 0;
 static int g_seconds  = 30;
 static uint32_t g_run_until = 0;
-
-/* FM2 TAS playback */
-static uint8_t *playback_buf = NULL;   /* [playback_total][2] */
-static int playback_total = 0;
-static int playback_frame = 0;
 
 /* embedded data provided via -include generated/$(GAME)_embedded_data.h */
 
@@ -151,7 +147,7 @@ static void load_state(void) {
    Input
    ========================================================================= */
 static void handle_key(SDL_Keycode k, int down) {
-    if (playback_buf) return;  /* ignore keyboard during TAS playback */
+    if (fm2_active()) return;  /* ignore keyboard during TAS playback */
     uint8_t bit = 0;
 
     switch (k) {
@@ -230,8 +226,7 @@ static void runner_miss_init(void) {
     if (!mode || *mode == '0') return;
     miss_map = calloc(65536 / 8, 1);
     if (!miss_map) return;
-    const char *game = getenv("GAME");
-    if (!game) game = "game";
+    const char *game = GAME_NAME;
     char path[512];
 #ifdef _WIN32
     mkdir("cfg");
@@ -280,62 +275,6 @@ static void runner_miss_write_all(void) {
         fprintf(f, "extra_func = %04X\n", addrs[i]);
     fclose(f);
     fprintf(stderr, "[learn] wrote %d addresses to %s\n", n, miss_path);
-}
-
-/* =========================================================================
-   FM2 TAS movie loader
-   ========================================================================= */
-static uint8_t fm2_to_nes(const char *s) {
-    uint8_t v = 0;
-    if (strlen(s) >= 8) {
-        if (s[0] != '.') v |= 0x01;  /* Right */
-        if (s[1] != '.') v |= 0x02;  /* Left */
-        if (s[2] != '.') v |= 0x04;  /* Down */
-        if (s[3] != '.') v |= 0x08;  /* Up */
-        if (s[4] != '.') v |= 0x10;  /* Start (T) */
-        if (s[5] != '.') v |= 0x20;  /* Select (S) */
-        if (s[6] != '.') v |= 0x40;  /* B */
-        if (s[7] != '.') v |= 0x80;  /* A */
-    }
-    return v;
-}
-
-static int fm2_load(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { fprintf(stderr, "[fm2] cannot open %s\n", path); return 0; }
-
-    /* Count frames */
-    char line[1024];
-    int raw = 0;
-    while (fgets(line, sizeof(line), f))
-        if (line[0] == '|') raw++;
-    if (raw == 0) { fclose(f); return 0; }
-
-    playback_buf = malloc(raw * 2);
-    if (!playback_buf) { fclose(f); return 0; }
-
-    rewind(f);
-    int idx = 0;
-    while (fgets(line, sizeof(line), f) && idx < raw) {
-        if (line[0] != '|') continue;
-        int skip;
-        char p0[16] = "", p1[16] = "";
-        int n = sscanf(line, "|%d|%8[^|]|%8[^|]", &skip, p0, p1);
-        if (n < 2) continue;
-        uint8_t c0 = fm2_to_nes(p0);
-        uint8_t c1 = fm2_to_nes(p1);
-        int repeat = skip + 1;
-        for (int r = 0; r < repeat && idx < raw; r++) {
-            playback_buf[idx * 2 + 0] = c0;
-            playback_buf[idx * 2 + 1] = c1;
-            idx++;
-        }
-    }
-
-    playback_total = idx;
-    fprintf(stderr, "[fm2] loaded %d frames from %s\n", playback_total, path);
-    fclose(f);
-    return 1;
 }
 
 /* =========================================================================
@@ -448,7 +387,7 @@ void runner_run(void) {
     while (g_running) {
 
         if (g_headless) {
-            if (playback_buf) {
+            if (fm2_active()) {
                 /* FM2 playback controls the duration */
             } else if (SDL_GetTicks() >= g_run_until) {
                 fprintf(stderr, "[runner] Headless run complete\n");
@@ -495,6 +434,22 @@ void runner_run(void) {
                         }
                     }
 
+                    /* Screenshot F12 */
+                    if (key == SDLK_F12) {
+                        char path[64];
+                        snprintf(path, sizeof(path), "screenshot_%u.bmp",
+                                 (unsigned)SDL_GetTicks());
+                        SDL_Surface *surf = SDL_CreateRGBSurfaceFrom(
+                            ppu.framebuf, SCREEN_W, SCREEN_H, 32,
+                            SCREEN_W * 4,
+                            0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+                        if (surf) {
+                            SDL_SaveBMP(surf, path);
+                            SDL_FreeSurface(surf);
+                            fprintf(stderr, "[screenshot] saved %s\n", path);
+                        }
+                    }
+
                     /* Save / Load */
                     if (key == SDLK_F5)
                         save_state();
@@ -513,14 +468,12 @@ void runner_run(void) {
         if (g_nmi_pending) {
 
             /* Advance FM2 playback one frame */
-            if (playback_buf && playback_frame < playback_total) {
-                controller[0] = playback_buf[playback_frame * 2 + 0];
-                controller[1] = playback_buf[playback_frame * 2 + 1];
-                if (++playback_frame >= playback_total) {
-                    fprintf(stderr, "[fm2] playback complete (%d frames)\n",
-                            playback_total);
+            if (fm2_active()) {
+                uint8_t c0 = 0, c1 = 0;
+                if (!fm2_tick(&c0, &c1))
                     g_running = 0;
-                }
+                controller[0] = c0;
+                controller[1] = c1;
             }
 
             g_nmi_pending = 0;
@@ -566,6 +519,7 @@ void runner_run(void) {
             last_frame_scanline != 241) {
 
             last_frame_scanline = 241;
+
 
             if (!g_headless) {
                 for (int s = 0; s < apu.sample_count; s++) {
@@ -658,8 +612,7 @@ void runner_quit(void) {
             SDL_DestroyWindow(window);
     }
 
-    free(playback_buf);
-    playback_buf = NULL;
+    fm2_free();
 
     SDL_Quit();
 }
@@ -687,7 +640,7 @@ int main(int argc, char **argv) {
     }
 
     if (playback_path) {
-        if (!fm2_load(playback_path))
+        if (!fm2_open(playback_path))
             return 1;
     }
 

@@ -18,8 +18,9 @@ Static recompilation of NES games to native C code. No interpreter hot loop — 
 - **Learning mode** — `RECOMP_LEARN=1` collects dispatch misses into a `.cfg` file for the next recompilation
 - **Universal Makefile** — same Makefile works on Linux and Windows (MinGW), with cross-compile support
 - **Per-game binary** — `GAME=BattleCity` → `bin/BattleCity`
-- **Mapper support** — MMC1, UNROM, CNROM, MMC3 (partial)
+- **Mapper support** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
 - **Save states** — F5 save, F8 load
+- **Screenshot** — F12 (saves `screenshot_<ticks>.bmp`)
 - **Fullscreen** — F11 toggle
 - **Widescreen** — Tab toggle
 
@@ -55,6 +56,8 @@ You can also pass it explicitly:
 ```bash
 make GAME=MyGame ASM=MyGame.asm
 ```
+
+When `ASM` is set, the build pipeline runs `asm_parser.py` as a dedicated step before `nesrecomp.py`. Discovered labels are merged as `extra_func` entries directly into `cfg/MyGame.cfg` (existing entries and other directives are preserved).
 
 ### Windows (MinGW)
 
@@ -121,32 +124,52 @@ On each frame (`NMI`) the controller state is loaded from the next FM2 line. The
 ## Project Structure
 
 ```
-runner.c / runner.h   — SDL loop, input, audio, save states
-cpu_interp.c          — 6502 interpreter (fallback)
-ppu.c / ppu.h         — PPU 2C02 emulation
-apu.c / apu.h         — APU emulation (pulse, triangle, noise, DMC)
-mapper.c / mapper.h   — mapper logic (MMC1, UNROM, CNROM, MMC3)
-memory.c              — CPU address map, controller I/O
-include/              — shared headers (cpu, ppu, apu, mapper, interrupts)
+src/
+  runner.c / include/runner.h   — SDL loop, input, audio, save states
+  cpu_interp.c                  — 6502 interpreter (fallback)
+  fm2_player.c / include/fm2_player.h — FM2 TAS playback (file or directory)
+  ppu.c / include/ppu.h         — PPU 2C02 emulation
+  apu.c / include/apu.h         — APU emulation (pulse, triangle, noise, DMC)
+  mapper.c / include/mapper.h   — mapper logic (NROM, MMC1, UNROM, CNROM, MMC3, MMC5)
+  memory.c                      — CPU address map, controller I/O
+  include/                      — shared headers (cpu, ppu, apu, mapper, interrupts)
+
+tools/
+  nesrecomp.py          — static recompiler / discoverer / C emitter
+  asm_parser.py         — ca65 label parser (seeds BFS from manual disassembly)
+  extract_rom_data.py   — ROM parser → embedded C header/source
+
 generated/            — per-game recompiled C files + embedded ROM data (auto-generated)
-tools/nesrecomp.py    — static recompiler / discoverer / C emitter
-tools/extract_rom_data.py — ROM parser → embedded C header/source
 
 rom/                  — NES ROM files (.nes) — not tracked by git
 cfg/                  — per-game extra entry point config (learning mode output)
 asm/                  — ca65 assembly sources for label-based BFS seeding — not tracked by git
 fm2/                  — FCEUX TAS movie files for automated discovery — not tracked by git
+docs/                 — reference documentation — not tracked by git
 ```
 
 ## Supported Mappers
 
-| ID  | Name  | Status     |
-|-----|-------|------------|
-| 0   | NROM  | Complete   |
-| 1   | MMC1  | Complete   |
-| 2   | UNROM | Complete   |
-| 3   | CNROM | Complete   |
-| 4   | MMC3  | Partial    |
+| ID | Name  | Notes                                                                          |
+|----|-------|--------------------------------------------------------------------------------|
+| 0  | NROM  | Fixed 16/32 KB PRG; fully recompilable                                         |
+| 1  | MMC1  | 16 KB switchable + fixed last; CHR-RAM support; switchable bank via interpreter |
+| 2  | UNROM | 16 KB switchable + fixed last; CHR fixed; switchable bank via interpreter       |
+| 3  | CNROM | Fixed PRG; 8 KB switchable CHR                                                 |
+| 4  | MMC3  | 8 KB PRG/CHR granularity; scanline IRQ; switchable banks via interpreter        |
+| 5  | MMC5  | PRG mode 2, CHR 8×16, ExRAM; switchable banks via interpreter                  |
+
+### Tested Games
+
+| Game                  | Mapper | Boots | Title screen | Gameplay | Notes                              |
+|-----------------------|--------|-------|--------------|----------|------------------------------------|
+| Battle City           | 0      | ✅    | ✅           | ✅       | NROM-128 baseline                  |
+| Super Mario Bros.     | 0      | ✅    | ✅           | ✅       | NROM-256 baseline                  |
+| The Legend of Zelda   | 1      | ✅    | ✅           | ✅       | MMC1, CHR-RAM                      |
+| The Little Mermaid    | 2      | ✅    | ✅           | ✅       | UNROM, 128 KB PRG, CHR-RAM         |
+| Adventure Island      | 3      | ✅    | ✅           | ✅       | CNROM, 32 KB CHR switchable        |
+| Felix the Cat         | 4      | ✅    | ✅           | ✅       | MMC3 scanline IRQ                  |
+| Castlevania III       | 5      | ✅    | ✅           | ✅       | MMC5 PRG mode 2; switchable banks via interpreter |
 
 ## License
 

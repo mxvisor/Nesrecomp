@@ -19,11 +19,12 @@ ifeq ($(CROSS),1)
     CFLAGS  = -O2 -Wall -Wextra \
               -Wno-unused-parameter \
               -Wno-unused-variable \
-              -Iinclude \
+              -Isrc/include \
               -include generated/$(GAME)_embedded_data.h \
               -I/usr/i686-w64-mingw32/sys-root/mingw/include \
               -I/usr/i686-w64-mingw32/sys-root/mingw/include/SDL2 \
-              -DSDL_MAIN_HANDLED
+              -DSDL_MAIN_HANDLED \
+              -DGAME_NAME=\"$(GAME)\"
 
 else ifeq ($(UNAME_S),Linux)
 
@@ -34,9 +35,10 @@ else ifeq ($(UNAME_S),Linux)
     CFLAGS  = -O2 -Wall -Wextra \
               -Wno-unused-parameter \
               -Wno-unused-variable \
-              -Iinclude \
+              -Isrc/include \
               -include generated/$(GAME)_embedded_data.h \
-              $(shell sdl2-config --cflags)
+              $(shell sdl2-config --cflags) \
+              -DGAME_NAME=\"$(GAME)\"
 
 else
 
@@ -48,9 +50,10 @@ else
     CFLAGS  = -O2 -Wall -Wextra \
               -Wno-unused-parameter \
               -Wno-unused-variable \
-              -Iinclude \
+              -Isrc/include \
               -include generated/$(GAME)_embedded_data.h \
-              $(shell sdl2-config --cflags)
+              $(shell sdl2-config --cflags) \
+              -DGAME_NAME=\"$(GAME)\"
 
 endif
 
@@ -60,12 +63,13 @@ EMBED_SRC = generated/$(GAME)_embedded_data.c
 EMBED_HDR = generated/$(GAME)_embedded_data.h
 
 RUNNER_SRCS = \
-    memory.c \
-    cpu_interp.c \
-    ppu.c \
-    apu.c \
-    mapper.c \
-    runner.c
+    src/memory.c \
+    src/cpu_interp.c \
+    src/ppu.c \
+    src/apu.c \
+    src/mapper.c \
+    src/fm2_player.c \
+    src/runner.c
 
 FULL_SRC     = generated/$(GAME)_full.c
 DISPATCH_SRC = generated/$(GAME)_dispatch.c
@@ -111,7 +115,7 @@ CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
 #  Targets
 # ============================================================
 
-.PHONY: all compile clean recomp dirs
+.PHONY: all compile clean recomp dirs gen_embed parse_asm discover
 
 all: recomp
 
@@ -127,6 +131,11 @@ $(OBJDIR)/%.o: %.c
 	@echo [CC] $<
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(OBJDIR)/src/%.o: src/%.c
+	@$(MKDIR_OBJ)
+	@echo [CC] $<
+	$(CC) $(CFLAGS) -c $< -o $@
+
 dirs:
 	@$(MKDIR_DIRS)
 
@@ -135,23 +144,43 @@ gen_embed:
 	$(PYTHON) tools/extract_rom_data.py $(ROM) --game $(GAME) --out generated
 
 
-# Recompile ROM, then build
-# Usage: make GAME=NesGame  (or: make recomp GAME=NesGame)
-#   ROM     — optional, defaults to rom/$(GAME).nes
-#   ASM     — optional, defaults to asm/$(GAME).asm if that file exists
-#   CFG     — always cfg/$(GAME).cfg
-#   ORPHAN  — orphan-window size (default 3); increase to find more orphan code
+# ============================================================
+#  Recompile pipeline
+#  Usage: make GAME=NesGame  (or: make recomp GAME=NesGame)
+#    ROM    — optional, defaults to rom/$(GAME).nes
+#    ASM    — optional ASM file name (without path); auto-detected from asm/$(GAME).asm
+#    ORPHAN — orphan-window size (default 3)
+# ============================================================
 ROM          ?= rom/$(GAME).nes
-ASM_FLAG      = $(if $(ASM),--asm asm/$(ASM),$(if $(wildcard asm/$(GAME).asm),--asm asm/$(GAME).asm))
+ASM_FILE      = $(if $(ASM),asm/$(ASM),$(wildcard asm/$(GAME).asm))
 ORPHAN_FLAG   = $(if $(ORPHAN),--orphan-window $(ORPHAN))
 
+# Step 1: parse ca65 ASM labels → merge into cfg/$(GAME).cfg
+parse_asm:
+ifndef GAME
+	$(error GAME not set)
+endif
+	$(if $(ASM_FILE),\
+	  $(PYTHON) tools/asm_parser.py $(ASM_FILE) --cfg cfg/$(GAME).cfg,\
+	  @echo "[parse_asm] no ASM file for $(GAME) — skipping")
+
+# Step 2: run static recompiler (BFS discovery + C emit)
+discover:
+ifndef GAME
+	$(error GAME not set)
+endif
+	$(PYTHON) tools/nesrecomp.py $(ROM) --out generated --game $(GAME) \
+	    --cfg cfg/$(GAME).cfg $(ORPHAN_FLAG)
+
+# Full pipeline: embed → parse_asm → discover → compile
 recomp:
 ifndef GAME
 	$(error GAME not set. Usage: make GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
-	$(PYTHON) tools/nesrecomp.py $(ROM) --out generated --game $(GAME) --cfg cfg/$(GAME).cfg $(ASM_FLAG) $(ORPHAN_FLAG)
-	$(MAKE) compile GAME=$(GAME)
+	$(MAKE) parse_asm GAME=$(GAME) ASM=$(ASM) ROM=$(ROM)
+	$(MAKE) discover  GAME=$(GAME) ASM=$(ASM) ROM=$(ROM) ORPHAN=$(ORPHAN)
+	$(MAKE) compile   GAME=$(GAME)
 
 # Clean
 clean:

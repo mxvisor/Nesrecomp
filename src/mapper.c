@@ -1,4 +1,5 @@
 /* mapper: cartridge mapper — PRG/CHR banking, interrupts */
+#include <stdio.h>
 #include "mapper.h"
 #include "ppu.h"
 #include "interrupts.h"
@@ -260,8 +261,8 @@ void mapper5_write(uint16_t addr, uint8_t val) {
     case 0x5114: mapper.m5_prg[0] = val; break;
     case 0x5115: mapper.m5_prg[1] = val; break;
     case 0x5116: mapper.m5_prg[2] = val; break;
-    case 0x5117: mapper.m5_prg[3] = val | 0x80; break; /* always ROM */
-    case 0x5120: mapper.m5_chr[0] = val; mapper.m5_chr_upper = (mapper.m5_chr_upper & ~0x03) | (val >> 6 & 0); break;
+    case 0x5117: mapper.m5_prg[3] = val | 0x80; break;
+    case 0x5120: mapper.m5_chr[0] = val; break;
     case 0x5121: mapper.m5_chr[1] = val; break;
     case 0x5122: mapper.m5_chr[2] = val; break;
     case 0x5123: mapper.m5_chr[3] = val; break;
@@ -348,10 +349,9 @@ uint8_t mapper_chr_read(uint16_t addr) {
     }
         
     case 5: { /* MMC5 */
-        /* CHR bank selection depends on chr_mode and whether we're in BG fetch */
-        uint8_t *regs = mapper.m5_bg_chr ? mapper.m5_chr_hi : mapper.m5_chr;
-        int bank_count = mapper.m5_bg_chr ? 4 : 8;
-        (void)bank_count;
+        /* CHR bank selection: m5_chr_hi ($5128-$512B) only for BG in 8x16 sprite mode */
+        int use_hi = mapper.m5_bg_chr && (ppu.regs[0] & 0x20);
+        uint8_t *regs = use_hi ? mapper.m5_chr_hi : mapper.m5_chr;
         uint16_t upper = (uint16_t)mapper.m5_chr_upper << 8;
         uint8_t bank;
         switch (mapper.m5_chr_mode) {
@@ -360,19 +360,32 @@ uint8_t mapper_chr_read(uint16_t addr) {
             off = (uint32_t)((upper | bank) & 0x1FF) * 0x2000 + addr;
             break;
         case 1: /* 4KB */
-            if (addr < 0x1000) bank = regs[3];
-            else { bank = regs[7]; addr -= 0x1000; }
+            if (use_hi) {
+                /* chr_hi covers 4KB: indices 0 and 1 */
+                bank = regs[(addr < 0x1000) ? 0 : 1];
+                addr &= 0x0FFF;
+            } else {
+                if (addr < 0x1000) bank = regs[3];
+                else { bank = regs[7]; addr -= 0x1000; }
+            }
             off = (uint32_t)((upper | bank) & 0x1FF) * 0x1000 + addr;
             break;
         case 2: /* 2KB */
-            if      (addr < 0x0800) { bank = regs[1]; }
-            else if (addr < 0x1000) { bank = regs[3]; addr -= 0x0800; }
-            else if (addr < 0x1800) { bank = regs[5]; addr -= 0x1000; }
-            else                    { bank = regs[7]; addr -= 0x1800; }
+            if (use_hi) {
+                /* chr_hi covers 4KB in 2KB banks: indices 0-3 */
+                int idx2 = (addr >> 11) & 3;
+                bank = regs[idx2]; addr &= 0x07FF;
+            } else {
+                if      (addr < 0x0800) { bank = regs[1]; }
+                else if (addr < 0x1000) { bank = regs[3]; addr -= 0x0800; }
+                else if (addr < 0x1800) { bank = regs[5]; addr -= 0x1000; }
+                else                    { bank = regs[7]; addr -= 0x1800; }
+            }
             off = (uint32_t)((upper | bank) & 0x1FF) * 0x0800 + addr;
             break;
         default: /* 1KB */
-            { int idx = addr >> 10; bank = regs[idx & 7]; addr &= 0x3FF; }
+            { int idx = use_hi ? ((addr >> 10) & 3) : (addr >> 10);
+              bank = regs[idx & 7]; addr &= 0x3FF; }
             off = (uint32_t)((upper | bank) & 0x1FF) * 0x0400 + addr;
             break;
         }

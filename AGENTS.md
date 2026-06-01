@@ -53,6 +53,7 @@ Every recompiled function ends with `return` after each control-flow instruction
 | File | Purpose |
 |------|---------|
 | `tools/nesrecomp.py` | Static recompiler — BFS discovery + C code emitter |
+| `tools/asm_parser.py` | ca65 label parser — extracts labeled addresses ≥ $8000 as extra BFS seeds |
 | `runner.c / runner.h` | Main loop, SDL2 window, input, save states, FM2 TAS, interrupts |
 | `memory.c` | CPU address map ($0000–$FFFF): RAM, PPU regs, APU I/O, ROM |
 | `cpu_interp.c` | Full 6502 interpreter fallback (step and run modes) |
@@ -236,20 +237,32 @@ When passed via `ASM=`, the Makefile automatically prepends the `asm/` prefix �
 ## Build System
 
 ```bash
-# Full recompile (ROM → generated C → binary)
+# Full pipeline (ROM → embed → parse_asm → discover → compile → binary)
 make ROM=rom/NesGame.nes GAME=NesGame
 
-# Recompile C only (after editing source, no ROM re-disassembly)
-make compile GAME=NesGame
+# With ca65 assembly labels (asm_parser.py runs as a separate step)
+make ROM=rom/NesGame.nes GAME=NesGame ASM=NesGame.asm
+
+# Individual pipeline steps:
+make gen_embed  GAME=NesGame ROM=rom/NesGame.nes   # extract PRG/CHR to C header
+make parse_asm  GAME=NesGame ASM=NesGame.asm       # ca65 labels → generated/NesGame_asm_labels.cfg
+make discover   GAME=NesGame ROM=rom/NesGame.nes   # BFS + C emit
+make compile    GAME=NesGame                       # C → binary (no re-disassembly)
 
 # Cross-compile for Windows
 make CROSS=1 GAME=NesGame
-
-# With ca65 assembly labels
-make ROM=rom/NesGame.nes GAME=NesGame ASM=NesGame.asm
 ```
 
 Output: `bin/NesGame` (Linux) or `bin/NesGame.exe` (Windows).
+
+Pipeline data flow:
+```
+ROM
+ ├─ gen_embed  → generated/NesGame_embedded_data.h/.c
+ ├─ parse_asm  → cfg/NesGame.cfg  (merges new extra_func entries in-place)
+ └─ discover   ← cfg/NesGame.cfg
+               → generated/NesGame_full.c + NesGame_dispatch.c
+```
 
 ---
 
@@ -294,6 +307,7 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 | 2 | UNROM | 16KB switchable + fixed last | Fixed | |
 | 3 | CNROM | Fixed | 8KB switchable | CHR only switching |
 | 4 | MMC3 | 8KB granularity | 2/1KB granularity | Scanline IRQ; interpreter for $8000–$BFFF |
+| 5 | MMC5 | mode 2: 8KB×4 + fixed last | 1KB×8 sprites / 1KB×4 BG | PRG mode 3 (32KB switchable) not yet tested — TODO: find ROM (Just Breed, Uncharted Waters, Getsu Fuuma Den) |
 | 7 | AxROM | 32KB switchable | — | One-screen nametable |
 
 ---
@@ -329,3 +343,29 @@ Enable `RECOMP_LEARN=1`, run headless, check the generated `cfg/NesGame.cfg` for
 
 ### Investigating cycle accuracy
 Every instruction must: (a) increment `g_cpu_cycles` by the correct cycle count, (b) return from the recompiled function (or step from interpreter) so the main loop can step PPU/APU.
+
+---
+
+## TODO / Planned Features
+
+### Battery-backed SRAM persistence
+SRAM (`sram[0x2000]`, mapped at `$6000-$7FFF`) is present in memory and included in save states (F5/F8), but is not persisted to disk between sessions.
+
+**Implementation plan:**
+- On startup (`runner_init`): if the cartridge has battery flag set (`EMBEDDED_BATTERY` or check mapper), load `sav/GAME_NAME.sav` into `sram[]`
+- On exit (`runner_quit`): write `sram[]` to `sav/GAME_NAME.sav`
+- Relevant files: `src/runner.c`, `generated/GAME_embedded_data.h` (add `EMBEDDED_BATTERY` flag via `tools/extract_rom_data.py`)
+- NES ROM header byte 6 bit 1 = battery-backed SRAM present
+
+### MMC5 PRG mode 3
+PRG mode 3 (single switchable 32 KB bank) is not yet tested. Need a ROM that uses it.
+Candidate games: **Just Breed**, **Getsu Fuuma Den**, **Uncharted Waters** (all Japan, Koei).
+
+### AxROM (mapper 7)
+AxROM is listed in `mapper.c` / `mapper.h` but has never been tested against a real game.
+
+**Implementation plan:**
+- Add mapper 7 case to `mapper_write()`: bits 0–3 select 32 KB PRG bank, bit 4 selects one-screen nametable (lower or upper)
+- Add nametable mirroring to `ppu.c` / `memory.c`: single-screen mode using `$2000` or `$2400` depending on mapper bit
+- Test with a known AxROM game (e.g. **Battletoads**, **Jeopardy!**, **Time Lord**)
+- Add to Tested Games table in README once verified

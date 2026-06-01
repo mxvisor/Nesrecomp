@@ -46,10 +46,45 @@ static uint16_t mirror_nt(uint16_t addr) {
     return addr & 0x03FF;
 }
 
+/* MMC5 nametable read: routes to CIRAM, ExRAM, or fill tile */
+static uint8_t mmc5_nt_read(uint16_t addr) {
+    uint16_t rel  = addr & 0x0FFF;
+    uint8_t  slot = (rel >> 10) & 3;   /* which of the 4 NT slots */
+    uint16_t off  = rel & 0x03FF;
+    switch (mapper.m5_nt_map[slot]) {
+    case 0: return ppu.vram[off];           /* CIRAM page 0 */
+    case 1: return ppu.vram[0x0400 | off];  /* CIRAM page 1 */
+    case 2: return (mapper.m5_exram_mode <= 1) ? mapper.m5_exram[off & 0x3FF] : 0;
+    case 3: /* fill mode */
+        if (off >= 0x3C0) {
+            /* attribute byte — replicate fill attr in all groups */
+            uint8_t a = mapper.m5_fill_attr & 3;
+            return (uint8_t)((a << 6) | (a << 4) | (a << 2) | a);
+        }
+        return mapper.m5_fill_tile;
+    }
+    return 0;
+}
+
+static void mmc5_nt_write(uint16_t addr, uint8_t val) {
+    uint16_t rel  = addr & 0x0FFF;
+    uint8_t  slot = (rel >> 10) & 3;
+    uint16_t off  = rel & 0x03FF;
+    switch (mapper.m5_nt_map[slot]) {
+    case 0: ppu.vram[off]          = val; break;
+    case 1: ppu.vram[0x0400 | off] = val; break;
+    case 2: if (mapper.m5_exram_mode <= 1) mapper.m5_exram[off & 0x3FF] = val; break;
+    case 3: break; /* fill mode: writes ignored */
+    }
+}
+
 static uint8_t vram_read(uint16_t addr) {
     addr &= 0x3FFF;
     if (addr < 0x2000) return mapper_chr_read(addr);
-    if (addr < 0x3F00) return ppu.vram[mirror_nt(addr - 0x2000)];
+    if (addr < 0x3F00) {
+        if (mapper.id == 5) return mmc5_nt_read(addr);
+        return ppu.vram[mirror_nt(addr - 0x2000)];
+    }
     addr &= 0x1F;
     if (addr == 0x10 || addr == 0x14 || addr == 0x18 || addr == 0x1C)
         addr &= 0x0F;
@@ -59,7 +94,10 @@ static uint8_t vram_read(uint16_t addr) {
 static void vram_write(uint16_t addr, uint8_t val) {
     addr &= 0x3FFF;
     if (addr < 0x2000) { mapper_chr_write(addr, val); return; }
-    if (addr < 0x3F00) { ppu.vram[mirror_nt(addr - 0x2000)] = val; return; }
+    if (addr < 0x3F00) {
+        if (mapper.id == 5) { mmc5_nt_write(addr, val); return; }
+        ppu.vram[mirror_nt(addr - 0x2000)] = val; return;
+    }
     addr &= 0x1F;
     if (addr == 0x10 || addr == 0x14 || addr == 0x18 || addr == 0x1C)
         addr &= 0x0F;
@@ -173,6 +211,7 @@ static inline void copy_vert_v(void) {
    Background tile fetch
    ========================================================================= */
 static void fetch_bg_tile(void) {
+    mapper.m5_bg_chr = 1;
     uint16_t nt_addr = 0x2000 | (ppu.v_addr & 0x0FFF);
     uint8_t  tile    = vram_read(nt_addr);
 
@@ -196,6 +235,7 @@ static void fetch_bg_tile(void) {
 }
 
 static void fetch_bg_tile_high(void) {
+    mapper.m5_bg_chr = 1;
     uint16_t nt_addr = 0x2000 | (ppu.v_addr & 0x0FFF);
     uint8_t  tile    = vram_read(nt_addr);
 
@@ -249,6 +289,7 @@ static void eval_sprites(int scanline) {
             if (row >= 8) { t++; row -= 8; }
         }
 
+        mapper.m5_bg_chr = 0;
         uint8_t lo = vram_read(pt_base + (uint16_t)t * 16 + row);
         uint8_t hi = vram_read(pt_base + (uint16_t)t * 16 + row + 8);
 
@@ -373,7 +414,14 @@ void ppu_step(void) {
         ppu.frame_ready = 1;
         ppu.nmi_suppressed = 0;
         if (NMI_EN) nes_nmi();
+        /* MMC5: end of frame */
+        mapper.m5_in_frame = 0;
+        mapper.m5_scanline = 0;
     }
+
+    /* MMC5: track in-frame state — starts at pre-render scanline dot 1 */
+    if (mapper.id == 5 && scanline == 261 && dot == 1)
+        mapper.m5_in_frame = 1;
 
     /* MMC3 Scanline IRQ: fire at dot 260 (hblank) of visible scanlines 0-239.
        Firing during hblank gives the CPU time to switch CHR banks before the next scanline renders. */
