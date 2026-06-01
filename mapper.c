@@ -27,6 +27,17 @@ void mapper_init(int id, int prg_banks, int chr_banks, int mirroring) {
         mapper.m1_ctrl        = 0x0C;
     }
     
+    /* MMC5 defaults */
+    if (id == 5) {
+        mapper.m5_prg_mode = 3;   /* 8KB banks */
+        mapper.m5_chr_mode = 3;   /* 1KB banks */
+        /* last PRG bank always at $E000 */
+        mapper.m5_prg[3] = (prg_banks * 2 - 1) | 0x80;
+        /* default nametable: all CIRAM page 0 */
+        mapper.m5_nt_map[0] = mapper.m5_nt_map[1] = 0;
+        mapper.m5_nt_map[2] = mapper.m5_nt_map[3] = 1;
+    }
+
     /* MMC3 defaults */
     if (id == 4) {
         mapper.m4_banks[6] = prg_banks * 2 - 2;
@@ -102,10 +113,37 @@ uint8_t mapper_prg_read(uint16_t addr) {
         return prg_rom[offset % prg_rom_size];
     }
         
+    case 5: { /* MMC5 */
+        /* $E000-$FFFF: always last ROM bank (bit7=ROM in m5_prg[3]) */
+        uint8_t bank;
+        if (addr >= 0xE000) {
+            bank = mapper.m5_prg[3] & 0x7F;
+            offset = (uint32_t)bank * 0x2000 + (addr - 0xE000);
+        } else if (mapper.m5_prg_mode == 3) {
+            /* 8KB mode: m5_prg[0-3] → $8000/$A000/$C000/$E000 */
+            if      (addr < 0xA000) { bank = mapper.m5_prg[0] & 0x7F; offset = (uint32_t)bank * 0x2000 + (addr - 0x8000); }
+            else if (addr < 0xC000) { bank = mapper.m5_prg[1] & 0x7F; offset = (uint32_t)bank * 0x2000 + (addr - 0xA000); }
+            else                    { bank = mapper.m5_prg[2] & 0x7F; offset = (uint32_t)bank * 0x2000 + (addr - 0xC000); }
+        } else if (mapper.m5_prg_mode == 2) {
+            /* 16+8+8: m5_prg[1] 16KB at $8000, m5_prg[2] 8KB at $C000 */
+            if (addr < 0xC000) { bank = (mapper.m5_prg[1] & 0x7E); offset = (uint32_t)bank * 0x2000 + (addr - 0x8000); }
+            else               { bank = mapper.m5_prg[2] & 0x7F;   offset = (uint32_t)bank * 0x2000 + (addr - 0xC000); }
+        } else if (mapper.m5_prg_mode == 1) {
+            /* 16KB: m5_prg[1] at $8000, m5_prg[3] at $C000 */
+            if (addr < 0xC000) { bank = (mapper.m5_prg[1] & 0x7E); offset = (uint32_t)bank * 0x2000 + (addr - 0x8000); }
+            else               { bank = (mapper.m5_prg[3] & 0x7E); offset = (uint32_t)bank * 0x2000 + (addr - 0xC000); }
+        } else {
+            /* 32KB: m5_prg[3] at $8000 */
+            bank = (mapper.m5_prg[3] & 0x7C);
+            offset = (uint32_t)bank * 0x2000 + (addr - 0x8000);
+        }
+        return prg_rom[offset % prg_rom_size];
+    }
+
     case 7: /* AxROM — 32KB switchable bank at $8000-$FFFF */
         offset = (uint32_t)mapper.m1_prg_bank * 0x8000 + (addr - 0x8000);
         return prg_rom[offset % prg_rom_size];
-        
+
     default:
         offset = addr - 0x8000;
         return prg_rom[offset % prg_rom_size];
@@ -171,10 +209,77 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
         }
         break;
         
+    case 5: /* MMC5 — PRG writes go through mapper5_write */
+        mapper5_write(addr, val);
+        break;
+
     case 7: /* AxROM */
         mapper.m1_prg_bank = val & 0x07;
         mapper.mirroring = (val & 0x10) ? 4 : 3;
         break;
+    }
+}
+
+/* =========================================================================
+   MMC5 register read/write ($5000-$5FFF)
+   ========================================================================= */
+uint8_t mapper5_read(uint16_t addr) {
+    if (addr >= 0x5C00 && addr <= 0x5FFF)
+        return mapper.m5_exram[addr - 0x5C00];
+    if (addr == 0x5204) {
+        uint8_t v = (mapper.m5_in_frame ? 0x40 : 0) |
+                    (mapper.m5_irq_enable && mapper.m5_in_frame &&
+                     mapper.m5_scanline == mapper.m5_irq_line ? 0x80 : 0);
+        return v;
+    }
+    if (addr == 0x5205) return (uint8_t)((mapper.m5_mul[0] * mapper.m5_mul[1]) & 0xFF);
+    if (addr == 0x5206) return (uint8_t)((mapper.m5_mul[0] * mapper.m5_mul[1]) >> 8);
+    return 0xFF;
+}
+
+void mapper5_write(uint16_t addr, uint8_t val) {
+    if (addr >= 0x5C00 && addr <= 0x5FFF) {
+        if (mapper.m5_exram_mode <= 1) mapper.m5_exram[addr - 0x5C00] = val;
+        else if (mapper.m5_exram_mode == 2) { /* read-only, ignore */ }
+        else mapper.m5_exram[addr - 0x5C00] = val;
+        return;
+    }
+    switch (addr) {
+    case 0x5100: mapper.m5_prg_mode = val & 3; break;
+    case 0x5101: mapper.m5_chr_mode = val & 3; break;
+    case 0x5104: mapper.m5_exram_mode = val & 3; break;
+    case 0x5105:
+        /* nametable mapping: 2 bits per screen (0=CIRAM0,1=CIRAM1,2=ExRAM,3=fill) */
+        mapper.m5_nt_map[0] = (val >> 0) & 3;
+        mapper.m5_nt_map[1] = (val >> 2) & 3;
+        mapper.m5_nt_map[2] = (val >> 4) & 3;
+        mapper.m5_nt_map[3] = (val >> 6) & 3;
+        break;
+    case 0x5106: mapper.m5_fill_tile = val; break;
+    case 0x5107: mapper.m5_fill_attr = val & 3; break;
+    case 0x5114: mapper.m5_prg[0] = val; break;
+    case 0x5115: mapper.m5_prg[1] = val; break;
+    case 0x5116: mapper.m5_prg[2] = val; break;
+    case 0x5117: mapper.m5_prg[3] = val | 0x80; break; /* always ROM */
+    case 0x5120: mapper.m5_chr[0] = val; mapper.m5_chr_upper = (mapper.m5_chr_upper & ~0x03) | (val >> 6 & 0); break;
+    case 0x5121: mapper.m5_chr[1] = val; break;
+    case 0x5122: mapper.m5_chr[2] = val; break;
+    case 0x5123: mapper.m5_chr[3] = val; break;
+    case 0x5124: mapper.m5_chr[4] = val; break;
+    case 0x5125: mapper.m5_chr[5] = val; break;
+    case 0x5126: mapper.m5_chr[6] = val; break;
+    case 0x5127: mapper.m5_chr[7] = val; break;
+    case 0x5128: mapper.m5_chr_hi[0] = val; break;
+    case 0x5129: mapper.m5_chr_hi[1] = val; break;
+    case 0x512A: mapper.m5_chr_hi[2] = val; break;
+    case 0x512B: mapper.m5_chr_hi[3] = val; break;
+    case 0x5130: mapper.m5_chr_upper = val & 3; break;
+    case 0x5203: mapper.m5_irq_line = val; break;
+    case 0x5204: mapper.m5_irq_enable = (val >> 7) & 1; break;
+    case 0x5205: mapper.m5_mul[0] = val; break;
+    case 0x5206: mapper.m5_mul[1] = val; break;
+    /* PRG writes in range $8000-$FFFF also handled here for completeness */
+    default: break;
     }
 }
 
@@ -242,6 +347,38 @@ uint8_t mapper_chr_read(uint16_t addr) {
         return ppu.chr[off % chr_size];
     }
         
+    case 5: { /* MMC5 */
+        /* CHR bank selection depends on chr_mode and whether we're in BG fetch */
+        uint8_t *regs = mapper.m5_bg_chr ? mapper.m5_chr_hi : mapper.m5_chr;
+        int bank_count = mapper.m5_bg_chr ? 4 : 8;
+        (void)bank_count;
+        uint16_t upper = (uint16_t)mapper.m5_chr_upper << 8;
+        uint8_t bank;
+        switch (mapper.m5_chr_mode) {
+        case 0: /* 8KB */
+            bank = regs[7];
+            off = (uint32_t)((upper | bank) & 0x1FF) * 0x2000 + addr;
+            break;
+        case 1: /* 4KB */
+            if (addr < 0x1000) bank = regs[3];
+            else { bank = regs[7]; addr -= 0x1000; }
+            off = (uint32_t)((upper | bank) & 0x1FF) * 0x1000 + addr;
+            break;
+        case 2: /* 2KB */
+            if      (addr < 0x0800) { bank = regs[1]; }
+            else if (addr < 0x1000) { bank = regs[3]; addr -= 0x0800; }
+            else if (addr < 0x1800) { bank = regs[5]; addr -= 0x1000; }
+            else                    { bank = regs[7]; addr -= 0x1800; }
+            off = (uint32_t)((upper | bank) & 0x1FF) * 0x0800 + addr;
+            break;
+        default: /* 1KB */
+            { int idx = addr >> 10; bank = regs[idx & 7]; addr &= 0x3FF; }
+            off = (uint32_t)((upper | bank) & 0x1FF) * 0x0400 + addr;
+            break;
+        }
+        return ppu.chr[off % chr_size];
+    }
+
     default:
         return ppu.chr[addr % chr_size];
     }
@@ -258,6 +395,14 @@ void mapper_chr_write(uint16_t addr, uint8_t val) {
    MMC3 Scanline IRQ
    ========================================================================= */
 void mapper_scanline(void) {
+    /* MMC5 in-frame scanline IRQ */
+    if (mapper.id == 5) {
+        mapper.m5_scanline++;
+        if (mapper.m5_in_frame && mapper.m5_scanline == mapper.m5_irq_line && mapper.m5_irq_enable)
+            nes_irq();
+        return;
+    }
+
     if (mapper.id != 4) return;
     
     /* Called from ppu.c only when RENDER is active — no extra checks needed */

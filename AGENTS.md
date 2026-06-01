@@ -186,11 +186,17 @@ RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
 make ROM=rom/NesGame.nes GAME=NesGame
 ```
 
-Repeat until no new misses. FM2 TAS files help cover more code paths:
+Repeat until no new misses. If an FM2 file exists for the game, always prefer it over a timed headless run — it covers far more code paths and terminates automatically when playback ends:
 
 ```bash
-./bin/NesGame --playback fm2/NesGame.fm2 --headless
+# Preferred: FM2 playback (terminates when done, covers all code paths in the recording)
+./bin/NesGame --headless --playback fm2/NesGame.fm2
+
+# Fallback: timed headless run (no FM2 available)
+RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
 ```
+
+Learning mode is enabled automatically in headless mode. After the run, re-run `make GAME=NesGame` to rebuild with the new addresses.
 
 ---
 

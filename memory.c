@@ -61,6 +61,8 @@ uint8_t mem_read(uint16_t addr) {
     if (addr == 0x4016) return ctrl_read(0);
     if (addr == 0x4017) return ctrl_read(1);
     if (addr < 0x4020) return 0xFF; /* open bus */
+    /* MMC5 registers / ExRAM $5000-$5FFF */
+    if (addr >= 0x5000 && addr < 0x6000) return mapper5_read(addr);
     /* SRAM $6000-$7FFF */
     if (addr >= 0x6000 && addr < 0x8000) return sram[addr - 0x6000];
     /* PRG-ROM $8000-$FFFF */
@@ -85,6 +87,8 @@ void mem_write(uint16_t addr, uint8_t val) {
     }
     if (addr == 0x4016) { ctrl_write(val); return; }
     if (addr >= 0x4000 && addr <= 0x4017) { apu_write(addr, val); return; }
+    /* MMC5 registers / ExRAM $5000-$5FFF */
+    if (addr >= 0x5000 && addr < 0x6000) { mapper5_write(addr, val); return; }
     if (addr >= 0x6000 && addr < 0x8000) { sram[addr - 0x6000] = val; return; }
     if (addr >= 0x8000) { mapper_prg_write(addr, val); return; }
 }

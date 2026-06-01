@@ -462,19 +462,20 @@ JumpTable:
   (особенно после фиксов 1.4 и 1.5).
 - [ ] blargg's `instr_timing`: то же.
 
-#### Покрытие по мапперам: 6 канонических игр
+#### Покрытие по мапперам: тестовый корпус
 
-Подобраны по одной популярной игре на каждый из основных мапперов.
+Подобраны игры на каждый из основных мапперов. ROM и FM2 присутствуют локально.
 Порядок — по возрастанию сложности для рекомпилятора.
 
-| # | Маппер | Игра | PRG | CHR | Что проверяет |
-|---|--------|------|-----|-----|----------------|
-| 0 | NROM-128 | Battle City | 16 КБ | 8 КБ ROM | Минимальный baseline, PRG-mirroring |
-| 0 | NROM-256 | Super Mario Bros. | 32 КБ | 8 КБ ROM | Базовый baseline без mirroring, sprite-0 hit |
-| 1 | MMC1 (SNROM) | The Legend of Zelda | 128 КБ | CHR-RAM | Switchable $8000–$BFFF, fixed bank 7 в $C000–$FFFF |
-| 2 | UNROM | Mega Man | 128 КБ | CHR-RAM | Простейший switchable case, проверка `is_switchable` для не-MMC3 |
-| 3 | CNROM | Hudson's Adventure Island | 32 КБ | 32 КБ ROM | PRG фиксирован, переключается только CHR |
-| 4 | MMC3 (TKROM) | Super Mario Bros. 3 | 256 КБ | 128 КБ ROM | Полноценный bank switching + scanline IRQ |
+| # | Маппер | Игра (GAME=) | PRG | CHR | FM2 | Что проверяет |
+|---|--------|--------------|-----|-----|-----|----------------|
+| 0 | NROM-128 | Battle (Battle City) | 16 КБ | 8 КБ ROM | ✅ | Минимальный baseline, PRG-mirroring |
+| 0 | NROM-256 | Mario (Super Mario Bros.) | 32 КБ | 8 КБ ROM | ✅ | Baseline без mirroring, sprite-0 hit |
+| 1 | MMC1 | Zelda (The Legend of Zelda) | 128 КБ | CHR-RAM | ✅ | Switchable PRG, CHR-RAM, battery save |
+| 2 | UNROM | Mermaid (The Little Mermaid) | 128 КБ | CHR-RAM | ✅ | Switchable PRG для не-MMC3 |
+| 3 | CNROM | Adventure (Adventure Island) | 32 КБ | 32 КБ ROM | ✅ | PRG фиксирован, переключается CHR |
+| 4 | MMC3 | Captain / Felix / Superc / Contraf | 128 КБ | 128 КБ ROM | ✅ | Bank switching + scanline IRQ |
+| 5 | MMC5 | Castlevania3 (Castlevania 3) | 128 КБ | CHR-ROM | ✅ | ExRAM, multiplier, in-frame IRQ |
 
 #### Чеклист тестирования по этим играм
 
@@ -514,12 +515,12 @@ JumpTable:
 - [ ] CHR-RAM (нет CHR-ROM!) — графика должна обновляться через
   записи в PPUDATA.
 
-**Mega Man (UNROM)** — простейший switchable case.
+**The Little Mermaid (UNROM)** — простейший switchable case.
 - [ ] Запускается ли? Если нет — баг в обработке switchable слота
   для не-MMC3 мапперов.
-- [ ] Загрузка stage select экрана — здесь происходит первое
+- [ ] Загрузка первого уровня — здесь происходит первое
   серьёзное переключение банков.
-- [ ] Пройти Cut Man stage целиком, сравнить с эмулятором.
+- [ ] Пройти первый уровень целиком, сравнить с эмулятором.
 - [ ] Проверить, что bus conflicts при записи в $8000–$FFFF
   обрабатываются корректно (или хотя бы не ломают игру).
 
@@ -531,16 +532,22 @@ JumpTable:
   «один статический образ PRG» **корректна для CNROM**
   (свапается только CHR).
 
-**Super Mario Bros. 3 (MMC3)** — тяжёлый кейс.
+**Captain / Felix / Superc / Contraf (MMC3)** — тяжёлый кейс.
 - [ ] Бенчмарк FPS без vsync-капа. Сравнить с Battle City и SMB1
   в тех же условиях. Если разница в 1.5–3× — bank-aware
   рекомпиляция окупится (см. **2.1**).
 - [ ] Профайл `perf record`: какой процент CPU-времени уходит в
   `cpu_interp_step` vs `func_*`.
-- [ ] Scanline IRQ для status bar работает — упирается в точные
-  циклы (**1.4**, **1.5**) и в эмуляцию MMC3-таймера в runner.
-- [ ] Pipe transition между world map и levels — проверка
-  переключения банков на стыке состояний.
+- [ ] Scanline IRQ работает — упирается в точные циклы и в эмуляцию
+  MMC3-таймера в runner.
+- [ ] Переключение банков на стыке уровней/экранов — проверка
+  корректности bank switching.
+
+**Castlevania 3 (MMC5)** — самый сложный маппер.
+- [ ] Запускается ли? MMC5 требует ExRAM, multiplier, in-frame IRQ.
+- [ ] Заставка и title screen отрисовываются корректно.
+- [ ] Первый уровень проходим без графических артефактов.
+- [ ] Смена персонажа (Alucard/Grant/Sypha) работает — это ExRAM-зависимая логика.
 
 #### Инфраструктура критериев успеха
 

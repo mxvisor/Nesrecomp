@@ -185,6 +185,21 @@ typedef struct {
     uint8_t  m4_banks[8];
     uint8_t  m4_irq_latch, m4_irq_counter;
     uint8_t  m4_irq_enable, m4_irq_reload;
+    /* MMC5 (mapper 5) */
+    uint8_t  m5_prg_mode, m5_chr_mode;
+    uint8_t  m5_prg[4];
+    uint8_t  m5_chr[8];
+    uint8_t  m5_chr_hi[4];
+    uint8_t  m5_chr_upper;
+    uint8_t  m5_irq_line, m5_irq_enable;
+    uint8_t  m5_in_frame;
+    int      m5_scanline;
+    uint8_t  m5_mul[2];
+    uint8_t  m5_exram[1024];
+    uint8_t  m5_exram_mode;
+    uint8_t  m5_nt_map[4];
+    uint8_t  m5_fill_tile, m5_fill_attr;
+    uint8_t  m5_bg_chr;
 } Mapper;
 
 extern Mapper mapper;
@@ -195,6 +210,8 @@ void    mapper_prg_write(uint16_t addr, uint8_t val);
 uint8_t mapper_chr_read(uint16_t addr);
 void    mapper_chr_write(uint16_t addr, uint8_t val);
 void    mapper_scanline(void);
+uint8_t mapper5_read(uint16_t addr);
+void    mapper5_write(uint16_t addr, uint8_t val);
 
 /* =========================================================================
    Controller
