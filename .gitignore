@@ -11,6 +11,7 @@ fm2/*
 !asm/.gitkeep
 !fm2/.gitkeep
 *.png
+!docs/assets/*.png
 *.ppm
 *.log
 *.cfg
