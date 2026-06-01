@@ -19,10 +19,12 @@
 - **Универсальный Makefile** — один Makefile работает на Linux и Windows (MinGW), с поддержкой кросс-компиляции
 - **Бинарник для каждой игры** — `GAME=BattleCity` → `bin/BattleCity`
 - **Поддержка маперов** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
-- **Состояния сохранения** — F5 сохранить, F8 загрузить
-- **Скриншот** — F12 (сохраняет `screenshot_<ticks>.bmp`)
+- **Состояния сохранения** — F5 сохранить, F8 загрузить (файл `<bin-dir>/sav/GAME.state`)
+- **SRAM на батарейке** — автозагрузка/сохранение в `<bin-dir>/sav/GAME_battery.sav` при наличии battery-флага в картридже
+- **Скриншот** — F12 (сохраняет `screenshot_<ticks>.png`); `--screenshot FILE.png` при запуске для PNG-захвата в headless-режиме
 - **Полноэкранный режим** — переключение F11
 - **Широкоэкранный режим** — переключение Tab
+- **Масштаб** — `--scale N` при запуске; компиляционное значение по умолчанию через `make DEFAULT_SCALE=3`
 
 ## Быстрый старт
 
@@ -121,6 +123,32 @@ GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 
 На каждом кадре (`NMI`) состояние контроллера загружается из следующей строки FM2. Клавиатура игнорируется во время воспроизведения. Программа завершается, когда все кадры исчерпаны.
 
+## Управление
+
+### Геймпад (Игрок 1)
+
+| Кнопка NES | Клавиша        |
+|------------|----------------|
+| A          | Z              |
+| B          | X              |
+| Select     | Right Shift    |
+| Start      | Enter          |
+| Вверх      | Стрелка вверх  |
+| Вниз       | Стрелка вниз   |
+| Влево      | Стрелка влево  |
+| Вправо     | Стрелка вправо |
+
+### Горячие клавиши
+
+| Клавиша | Действие                                        |
+|---------|-------------------------------------------------|
+| ESC     | Выход                                           |
+| F5      | Сохранить состояние (`sav/GAME.state`)          |
+| F8      | Загрузить состояние                             |
+| F11     | Полноэкранный режим                             |
+| F12     | Скриншот (`screenshot_<ticks>.png`)             |
+| Tab     | Широкоэкранный режим (pillarbox → растяжение)   |
+
 ## Структура проекта
 
 ```
@@ -165,11 +193,24 @@ docs/                 — справочная документация — не
 |-----------------------|--------|--------|----------|----------|-------------------------------------------------|
 | Battle City           | 0      | ✅     | ✅       | ✅       | Базовая проверка NROM-128                       |
 | Super Mario Bros.     | 0      | ✅     | ✅       | ✅       | Базовая проверка NROM-256                       |
-| The Legend of Zelda   | 1      | ✅     | ✅       | ✅       | MMC1, CHR-RAM                                   |
+| The Legend of Zelda   | 1      | ✅     | ✅       | ✅       | MMC1, CHR-RAM, SRAM на батарейке                |
 | The Little Mermaid    | 2      | ✅     | ✅       | ✅       | UNROM, 128 КБ PRG, CHR-RAM                      |
 | Adventure Island      | 3      | ✅     | ✅       | ✅       | CNROM, переключаемый CHR 32 КБ                  |
 | Felix the Cat         | 4      | ✅     | ✅       | ✅       | MMC3 scanline IRQ                               |
 | Castlevania III       | 5      | ✅     | ✅       | ✅       | MMC5 PRG mode 2; переключаемые банки через интерпретатор |
+
+## Скриншоты
+
+| | | |
+|---|---|---|
+| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battle.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
+| Adventure Island | Battle City | Captain America and the Avengers |
+| ![Castlevania III](docs/assets/Castle3.png) | ![Contra Force](docs/assets/Contraf.png) | ![Felix the Cat](docs/assets/Felix.png) |
+| Castlevania III | Contra Force | Felix the Cat |
+| ![Super Mario Bros.](docs/assets/Mario.png) | ![The Little Mermaid](docs/assets/Mermaid.png) | ![Super C](docs/assets/Superc.png) |
+| Super Mario Bros. | The Little Mermaid | Super C |
+| ![The Legend of Zelda](docs/assets/Zelda.png) | | |
+| The Legend of Zelda | | |
 
 ## Лицензия
 

@@ -348,14 +348,12 @@ Every instruction must: (a) increment `g_cpu_cycles` by the correct cycle count,
 
 ## TODO / Planned Features
 
-### Battery-backed SRAM persistence
-SRAM (`sram[0x2000]`, mapped at `$6000-$7FFF`) is present in memory and included in save states (F5/F8), but is not persisted to disk between sessions.
-
-**Implementation plan:**
-- On startup (`runner_init`): if the cartridge has battery flag set (`EMBEDDED_BATTERY` or check mapper), load `sav/GAME_NAME.sav` into `sram[]`
-- On exit (`runner_quit`): write `sram[]` to `sav/GAME_NAME.sav`
-- Relevant files: `src/runner.c`, `generated/GAME_embedded_data.h` (add `EMBEDDED_BATTERY` flag via `tools/extract_rom_data.py`)
-- NES ROM header byte 6 bit 1 = battery-backed SRAM present
+### ~~Battery-backed SRAM persistence~~ ✅ implemented
+`EMBEDDED_BATTERY` flag emitted by `extract_rom_data.py` (iNES header byte 6 bit 1).
+On startup: `sram_load()` reads `<bin-dir>/sav/GAME_battery.sav` into `sram[]`.
+On exit (`runner_quit`): `sram_save()` writes `sram[]` to the same path.
+No-op at compile time when `EMBEDDED_BATTERY == 0`.
+SIGTERM and SIGINT both trigger a clean exit so the save is not lost.
 
 ### MMC5 PRG mode 3
 PRG mode 3 (single switchable 32 KB bank) is not yet tested. Need a ROM that uses it.

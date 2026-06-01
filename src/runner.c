@@ -5,6 +5,9 @@
 #include <sys/stat.h>
 #include <stdatomic.h>
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 /* Flag set by SIGTERM handler so runner_run() exits cleanly */
 static volatile int g_running = 1;
 
@@ -17,6 +20,44 @@ static void handle_sigterm(int sig) {
 static int g_headless = 0;
 static int g_seconds  = 30;
 static uint32_t g_run_until = 0;
+
+#ifndef DEFAULT_SCALE
+#define DEFAULT_SCALE 1
+#endif
+static int g_scale = DEFAULT_SCALE;
+
+/* Directory for save files — set from argv[0] in main() */
+static char g_sav_dir[520] = "sav";
+
+/* Optional screenshot path set via --screenshot FILE */
+static const char *g_screenshot_path = NULL;
+
+/* Save ppu.framebuf as a PNG file without requiring SDL video */
+static void save_screenshot(const char *path) {
+    int w = SCREEN_W, h = SCREEN_H;
+    /* Convert ARGB8888 framebuf to packed RGB24 */
+    uint8_t *rgb = (uint8_t *)malloc(w * h * 3);
+    if (!rgb) { fprintf(stderr, "[screenshot] out of memory\n"); return; }
+    for (int i = 0; i < w * h; i++) {
+        uint32_t px = ppu.framebuf[i]; /* 0x00RRGGBB */
+        rgb[i * 3 + 0] = (px >> 16) & 0xFF; /* R */
+        rgb[i * 3 + 1] = (px >>  8) & 0xFF; /* G */
+        rgb[i * 3 + 2] =  px        & 0xFF; /* B */
+    }
+    if (stbi_write_png(path, w, h, 3, rgb, w * 3))
+        fprintf(stderr, "[screenshot] saved %s\n", path);
+    else
+        fprintf(stderr, "[screenshot] failed to write %s\n", path);
+    free(rgb);
+}
+
+static void sav_mkdir(void) {
+#ifdef _WIN32
+    mkdir(g_sav_dir);
+#else
+    mkdir(g_sav_dir, 0755);
+#endif
+}
 
 /* embedded data provided via -include generated/$(GAME)_embedded_data.h */
 
@@ -117,7 +158,13 @@ static void save_state(void) {
 
     state_exists = 1;
 
-    printf("[runner] State saved\n");
+    sav_mkdir();
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s.state", g_sav_dir, GAME_NAME);
+    FILE *f = fopen(path, "wb");
+    if (f) { fwrite(&savestate, 1, sizeof(savestate), f); fclose(f); }
+
+    printf("[runner] State saved: %s\n", path);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -125,6 +172,16 @@ static void save_state(void) {
 /* ------------------------------------------------------------------------- */
 
 static void load_state(void) {
+
+    /* Try loading from disk first */
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s.state", g_sav_dir, GAME_NAME);
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fread(&savestate, 1, sizeof(savestate), f);
+        fclose(f);
+        state_exists = 1;
+    }
 
     if (!state_exists) {
         printf("[runner] No save state\n");
@@ -139,8 +196,7 @@ static void load_state(void) {
     memcpy(ram, savestate.ram_copy, sizeof(ram));
     memcpy(sram, savestate.sram_copy, sizeof(sram));
 
-    /* FIX black screen after load */
-    printf("[runner] State loaded\n");
+    printf("[runner] State loaded: %s\n", path);
 }
 
 /* =========================================================================
@@ -219,6 +275,34 @@ void runner_miss(uint16_t addr) {
         fprintf(f, "%04X\n", addr);
         fclose(f);
     }
+}
+
+/* =========================================================================
+   Battery-backed SRAM persistence  (cfg/GAME.sav)
+   ========================================================================= */
+static void sram_load(void) {
+#if EMBEDDED_BATTERY
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s_battery.sav", g_sav_dir, GAME_NAME);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fread(sram, 1, sizeof(sram), f);
+    fclose(f);
+    fprintf(stderr, "[sram] loaded %s\n", path);
+#endif
+}
+
+static void sram_save(void) {
+#if EMBEDDED_BATTERY
+    sav_mkdir();
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s_battery.sav", g_sav_dir, GAME_NAME);
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "[sram] failed to write %s\n", path); return; }
+    fwrite(sram, 1, sizeof(sram), f);
+    fclose(f);
+    fprintf(stderr, "[sram] saved %s\n", path);
+#endif
 }
 
 static void runner_miss_init(void) {
@@ -305,8 +389,8 @@ int runner_init(const char *title, const char *rom_path) {
         display_name,
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        SCREEN_W * 3,
-        SCREEN_H * 3,
+        SCREEN_W * g_scale,
+        SCREEN_H * g_scale,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
 
@@ -355,6 +439,7 @@ int runner_init(const char *title, const char *rom_path) {
 
     memset(ram,  0, sizeof(ram));
     memset(sram, 0, sizeof(sram));
+    sram_load();
     memset(&ppu, 0, sizeof(ppu));
     memset(&apu, 0, sizeof(apu));
 
@@ -387,9 +472,7 @@ void runner_run(void) {
     while (g_running) {
 
         if (g_headless) {
-            if (fm2_active()) {
-                /* FM2 playback controls the duration */
-            } else if (SDL_GetTicks() >= g_run_until) {
+            if (SDL_GetTicks() >= g_run_until) {
                 fprintf(stderr, "[runner] Headless run complete\n");
                 return;
             }
@@ -437,17 +520,9 @@ void runner_run(void) {
                     /* Screenshot F12 */
                     if (key == SDLK_F12) {
                         char path[64];
-                        snprintf(path, sizeof(path), "screenshot_%u.bmp",
+                        snprintf(path, sizeof(path), "screenshot_%u.png",
                                  (unsigned)SDL_GetTicks());
-                        SDL_Surface *surf = SDL_CreateRGBSurfaceFrom(
-                            ppu.framebuf, SCREEN_W, SCREEN_H, 32,
-                            SCREEN_W * 4,
-                            0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
-                        if (surf) {
-                            SDL_SaveBMP(surf, path);
-                            SDL_FreeSurface(surf);
-                            fprintf(stderr, "[screenshot] saved %s\n", path);
-                        }
+                        save_screenshot(path);
                     }
 
                     /* Save / Load */
@@ -593,6 +668,8 @@ void runner_run(void) {
    ========================================================================= */
 void runner_quit(void) {
 
+    if (g_screenshot_path) save_screenshot(g_screenshot_path);
+    sram_save();
     runner_miss_write_all();
     free(miss_map);
     free(miss_path);
@@ -624,6 +701,24 @@ void runner_quit(void) {
 int main(int argc, char **argv) {
 
     signal(SIGTERM, handle_sigterm);
+    signal(SIGINT,  handle_sigterm);
+
+    /* Build sav dir path: dirname(argv[0])/sav */
+    {
+        char tmp[512];
+        snprintf(tmp, sizeof(tmp), "%s", argv[0]);
+        char *slash = strrchr(tmp, '/');
+#ifdef _WIN32
+        char *bslash = strrchr(tmp, '\\');
+        if (!slash || (bslash && bslash > slash)) slash = bslash;
+#endif
+        if (slash) {
+            *slash = '\0';
+            snprintf(g_sav_dir, sizeof(g_sav_dir), "%s/sav", tmp);
+        } else {
+            snprintf(g_sav_dir, sizeof(g_sav_dir), "sav");
+        }
+    }
 
     const char *rom_path = NULL;
     const char *playback_path = NULL;
@@ -635,6 +730,10 @@ int main(int argc, char **argv) {
             g_seconds = atoi(argv[++i]);
         else if (strcmp(argv[i], "--playback") == 0 && i + 1 < argc)
             playback_path = argv[++i];
+        else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc)
+            g_scale = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            g_screenshot_path = argv[++i];
         else if (argv[i][0] != '-')
             rom_path = argv[i];
     }

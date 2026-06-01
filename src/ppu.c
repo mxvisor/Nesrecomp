@@ -317,7 +317,6 @@ static void eval_sprites(int scanline) {
 void ppu_step(void) {
     int dot      = ppu.cycle;
     int scanline = ppu.scanline;
-    static uint16_t saved_t_addr;
 
     /* ---- Visible scanlines 0–239 AND pre-render scanline 261 ---- */
     if (scanline < 240 || (scanline == 261 && RENDER)) {
@@ -383,14 +382,9 @@ void ppu_step(void) {
 
         /* Scroll increment / copy / tile prefetch */
         if (RENDER) {
-            if (dot == 256) inc_vert_v();
+            if (dot == 256 && scanline < 240) inc_vert_v();
             if (dot == 257) copy_hori_v();
             if (scanline == 261 && dot >= 280 && dot <= 304) copy_vert_v();
-            if (scanline == 261 && dot == 320) {
-                ppu.t_addr = saved_t_addr;
-                copy_vert_v();
-                copy_hori_v();
-            }
             if (dot == 321) { fetch_bg_tile_high(); inc_hori_v(); }
             if (dot == 329) { fetch_bg_tile(); inc_hori_v(); }
         }
@@ -405,7 +399,6 @@ void ppu_step(void) {
     if (scanline == 261 && dot == 1) {
         ppu.regs[2] &= ~0xE0;
         ppu.nmi_suppressed = 0;
-        saved_t_addr = ppu.t_addr;
     }
 
     /* ---- VBlank: scanline 241, dot 1 ---- */

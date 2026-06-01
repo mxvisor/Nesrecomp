@@ -19,10 +19,12 @@ Static recompilation of NES games to native C code. No interpreter hot loop — 
 - **Universal Makefile** — same Makefile works on Linux and Windows (MinGW), with cross-compile support
 - **Per-game binary** — `GAME=BattleCity` → `bin/BattleCity`
 - **Mapper support** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
-- **Save states** — F5 save, F8 load
-- **Screenshot** — F12 (saves `screenshot_<ticks>.bmp`)
+- **Save states** — F5 save, F8 load (persisted to `<bin-dir>/sav/GAME.state`)
+- **Battery-backed SRAM** — auto-loaded/saved to `<bin-dir>/sav/GAME_battery.sav` when cartridge has battery flag
+- **Screenshot** — F12 (saves `screenshot_<ticks>.png`); `--screenshot FILE.png` at launch for headless capture
 - **Fullscreen** — F11 toggle
 - **Widescreen** — Tab toggle
+- **Scale** — `--scale N` at launch; compile-time default via `make DEFAULT_SCALE=3`
 
 ## Quick Start
 
@@ -121,6 +123,32 @@ GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 
 On each frame (`NMI`) the controller state is loaded from the next FM2 line. The keyboard is ignored during playback. The program exits when all frames are consumed.
 
+## Controls
+
+### Gamepad (Player 1)
+
+| NES button | Key         |
+|------------|-------------|
+| A          | Z           |
+| B          | X           |
+| Select     | Right Shift |
+| Start      | Enter       |
+| Up         | Arrow Up    |
+| Down       | Arrow Down  |
+| Left       | Arrow Left  |
+| Right      | Arrow Right |
+
+### Hotkeys
+
+| Key | Action                                      |
+|-----|---------------------------------------------|
+| ESC | Quit                                        |
+| F5  | Save state (`sav/GAME.state`)               |
+| F8  | Load state                                  |
+| F11 | Toggle fullscreen                           |
+| F12 | Screenshot (`screenshot_<ticks>.png`)       |
+| Tab | Toggle widescreen (pillarbox → stretch)     |
+
 ## Project Structure
 
 ```
@@ -165,11 +193,24 @@ docs/                 — reference documentation — not tracked by git
 |-----------------------|--------|-------|--------------|----------|------------------------------------|
 | Battle City           | 0      | ✅    | ✅           | ✅       | NROM-128 baseline                  |
 | Super Mario Bros.     | 0      | ✅    | ✅           | ✅       | NROM-256 baseline                  |
-| The Legend of Zelda   | 1      | ✅    | ✅           | ✅       | MMC1, CHR-RAM                      |
+| The Legend of Zelda   | 1      | ✅    | ✅           | ✅       | MMC1, CHR-RAM, battery SRAM        |
 | The Little Mermaid    | 2      | ✅    | ✅           | ✅       | UNROM, 128 KB PRG, CHR-RAM         |
 | Adventure Island      | 3      | ✅    | ✅           | ✅       | CNROM, 32 KB CHR switchable        |
 | Felix the Cat         | 4      | ✅    | ✅           | ✅       | MMC3 scanline IRQ                  |
 | Castlevania III       | 5      | ✅    | ✅           | ✅       | MMC5 PRG mode 2; switchable banks via interpreter |
+
+## Screenshots
+
+| | | |
+|---|---|---|
+| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battle.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
+| Adventure Island | Battle City | Captain America and the Avengers |
+| ![Castlevania III](docs/assets/Castle3.png) | ![Contra Force](docs/assets/Contraf.png) | ![Felix the Cat](docs/assets/Felix.png) |
+| Castlevania III | Contra Force | Felix the Cat |
+| ![Super Mario Bros.](docs/assets/Mario.png) | ![The Little Mermaid](docs/assets/Mermaid.png) | ![Super C](docs/assets/Superc.png) |
+| Super Mario Bros. | The Little Mermaid | Super C |
+| ![The Legend of Zelda](docs/assets/Zelda.png) | | |
+| The Legend of Zelda | | |
 
 ## License
 

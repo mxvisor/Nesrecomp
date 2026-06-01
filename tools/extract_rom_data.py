@@ -34,6 +34,7 @@ def main():
     flags7      = data[7]
     mapper_id   = (flags7 & 0xF0) | (flags6 >> 4)
     mirroring   = flags6 & 1
+    battery     = (flags6 >> 1) & 1
     has_trainer = (flags6 >> 2) & 1
     header_size = 16 + (512 if has_trainer else 0)
 
@@ -61,6 +62,7 @@ def main():
 #define EMBEDDED_PRG_BANKS   {prg_banks}
 #define EMBEDDED_CHR_BANKS   {chr_banks}
 #define EMBEDDED_MIRRORING   {mirroring}
+#define EMBEDDED_BATTERY     {battery}
 
 extern const uint8_t embedded_prg_rom[EMBEDDED_PRG_SIZE];
 extern const uint8_t embedded_chr_rom[EMBEDDED_CHR_SIZE];
@@ -92,7 +94,7 @@ extern const uint8_t embedded_chr_rom[EMBEDDED_CHR_SIZE];
 
     print(f"Generated {h_path}")
     print(f"Generated {c_path}")
-    print(f"  PRG: {prg_size} bytes, CHR: {chr_size} bytes, Mapper: {mapper_id}")
+    print(f"  PRG: {prg_size} bytes, CHR: {chr_size} bytes, Mapper: {mapper_id}, Battery: {battery}")
 
 if __name__ == "__main__":
     main()

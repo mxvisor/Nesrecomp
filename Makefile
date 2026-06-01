@@ -2,9 +2,10 @@ CC = gcc
 
 UNAME_S := $(shell uname -s)
 
-GAME    ?= stub
-BINDIR  = bin
-CROSS   ?=       # set CROSS=1 for Windows cross-compile from Linux
+GAME          ?=
+BINDIR         = bin
+CROSS         ?=       # set CROSS=1 for Windows cross-compile from Linux
+DEFAULT_SCALE ?= 1
 
 # ============================================================
 #  Platform-specific
@@ -24,7 +25,8 @@ ifeq ($(CROSS),1)
               -I/usr/i686-w64-mingw32/sys-root/mingw/include \
               -I/usr/i686-w64-mingw32/sys-root/mingw/include/SDL2 \
               -DSDL_MAIN_HANDLED \
-              -DGAME_NAME=\"$(GAME)\"
+              -DGAME_NAME=\"$(GAME)\" \
+              -DDEFAULT_SCALE=$(DEFAULT_SCALE)
 
 else ifeq ($(UNAME_S),Linux)
 
@@ -38,7 +40,8 @@ else ifeq ($(UNAME_S),Linux)
               -Isrc/include \
               -include generated/$(GAME)_embedded_data.h \
               $(shell sdl2-config --cflags) \
-              -DGAME_NAME=\"$(GAME)\"
+              -DGAME_NAME=\"$(GAME)\" \
+              -DDEFAULT_SCALE=$(DEFAULT_SCALE)
 
 else
 
@@ -53,7 +56,8 @@ else
               -Isrc/include \
               -include generated/$(GAME)_embedded_data.h \
               $(shell sdl2-config --cflags) \
-              -DGAME_NAME=\"$(GAME)\"
+              -DGAME_NAME=\"$(GAME)\" \
+              -DDEFAULT_SCALE=$(DEFAULT_SCALE)
 
 endif
 
@@ -115,9 +119,44 @@ CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
 #  Targets
 # ============================================================
 
-.PHONY: all compile clean recomp dirs gen_embed parse_asm discover
+.PHONY: all help roms compile clean recomp dirs gen_embed parse_asm discover
 
-all: recomp
+all:
+ifeq ($(GAME),)
+	@$(MAKE) help
+else
+	@$(MAKE) recomp GAME=$(GAME)
+endif
+
+help:
+	@echo "Usage:"
+	@echo "  make GAME=MyGame            — full pipeline (embed+recomp+compile)"
+	@echo "  make roms                   — build all ROMs found in rom/*.nes"
+	@echo "  make compile GAME=MyGame    — compile only (skip recomp)"
+	@echo "  make discover GAME=MyGame   — run static recompiler only"
+	@echo "  make clean   GAME=MyGame    — remove build artifacts"
+	@echo ""
+	@echo "Options:"
+	@echo "  ROM=path/to/game.nes        — override ROM path (default: rom/GAME.nes)"
+	@echo "  ASM=MyGame.asm              — ca65 source for extra BFS seeds"
+	@echo "  ORPHAN=N                    — orphan-window size (default 3)"
+	@echo "  CROSS=1                     — cross-compile for Windows (MinGW)"
+	@echo "  DEFAULT_SCALE=N             — compile-time window scale (default 1)"
+
+# Build every *.nes found in rom/ — uses filename stem as GAME name
+roms:
+	@found=0; \
+	for nes in rom/*.nes; do \
+	    [ -f "$$nes" ] || continue; \
+	    found=1; \
+	    game=$$(basename "$$nes" .nes); \
+	    echo ""; \
+	    echo "========================================"; \
+	    echo " Building: $$game"; \
+	    echo "========================================"; \
+	    $(MAKE) GAME=$$game ROM=$$nes || exit 1; \
+	done; \
+	[ $$found -eq 1 ] || echo "No ROMs found in rom/"
 
 compile: dirs $(TARGET)
 

@@ -20,7 +20,9 @@ from typing import Dict, List, Optional, Set, Tuple
 
 
 def parse_asm_labels(path: str,
-                     optable: dict) -> Set[int]:
+                     optable: dict,
+                     *,
+                     _insns: dict = None) -> Set[int]:
     """
     Parse a ca65 assembly source file and return all labeled addresses >= $8000.
 
@@ -40,9 +42,12 @@ def parse_asm_labels(path: str,
         return set()
 
     # Build mnemonic -> [(mode, size)] lookup
-    insns: Dict[str, List[Tuple[str, int]]] = {}
-    for op in optable.values():
-        insns.setdefault(op.mnemonic, []).append((op.mode, op.size))
+    if _insns is not None:
+        insns = _insns
+    else:
+        insns: Dict[str, List[Tuple[str, int]]] = {}
+        for op in optable.values():
+            insns.setdefault(op.mnemonic, []).append((op.mode, op.size))
 
     labels: Set[int] = set()
     pc: int = 0
@@ -224,7 +229,7 @@ if __name__ == '__main__':
 
     all_addrs: Set[int] = set()
     for path in args.asm:
-        all_addrs |= parse_asm_labels(path, _STUB)
+        all_addrs |= parse_asm_labels(path, {}, _insns=_STUB)
 
     if args.cfg:
         merge_into_cfg(args.cfg, all_addrs)

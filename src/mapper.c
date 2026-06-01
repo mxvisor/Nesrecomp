@@ -171,7 +171,14 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
                 uint8_t v = mapper.m1_shift & 0x1F;
                 mapper.m1_shift       = 0x10;
                 mapper.m1_shift_count = 0;
-                if      (addr < 0xA000) { mapper.m1_ctrl = v; mapper.mirroring = v & 3; }
+                if      (addr < 0xA000) {
+                    mapper.m1_ctrl = v;
+                    /* MMC1 mirroring bits → mirror_nt case:
+                       0=one-screen lower→3, 1=one-screen upper→4,
+                       2=vertical→1, 3=horizontal→0 */
+                    static const uint8_t m1_mirror[4] = {3, 4, 1, 0};
+                    mapper.mirroring = m1_mirror[v & 3];
+                }
                 else if (addr < 0xC000)   mapper.m1_chr_bank0 = v;
                 else if (addr < 0xE000)   mapper.m1_chr_bank1 = v;
                 else                      mapper.m1_prg_bank = v & 0x0F;
