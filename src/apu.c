@@ -1,4 +1,5 @@
 #include "runner.h"
+#include "interrupts.h"
 #include <math.h>
 
 APU apu;
@@ -25,6 +26,11 @@ static const uint8_t TRI_SEQ[32] = {
 
 static const uint16_t NOISE_PERIOD[16] = {
     4,8,16,32,64,96,128,160,202,254,380,508,762,1016,2034,4068
+};
+
+/* DMC rate table (NTSC) — CPU cycles per output clock */
+static const uint16_t DMC_RATE[16] = {
+    428,380,340,320,286,254,226,214,190,160,142,128,106,84,72,54
 };
 
 /* =========================================================================
@@ -113,9 +119,11 @@ void apu_write(uint16_t addr, uint8_t val) {
         break;
     /* DMC */
     case 0x4010:
-        apu.dmc.irq_en   = (val >> 7) & 1;
-        apu.dmc.loop     = (val >> 6) & 1;
-        apu.dmc.rate_idx = val & 0xF;
+        apu.dmc.irq_en       = (val >> 7) & 1;
+        apu.dmc.loop         = (val >> 6) & 1;
+        apu.dmc.rate_idx     = val & 0xF;
+        apu.dmc.timer_reload = DMC_RATE[apu.dmc.rate_idx];
+        if (!apu.dmc.irq_en) apu.dmc.irq_flag = 0;
         break;
     case 0x4011:
         apu.dmc.output = val & 0x7F;
@@ -137,6 +145,17 @@ void apu_write(uint16_t addr, uint8_t val) {
         if (!apu.pulse[1].enabled) apu.pulse[1].length = 0;
         if (!apu.tri.enabled)      apu.tri.length = 0;
         if (!apu.noise.enabled)    apu.noise.length = 0;
+        apu.dmc.irq_flag = 0; /* writing $4015 always clears DMC IRQ flag */
+        if (apu.dmc.enabled) {
+            /* restart sample if bytes_remaining == 0 */
+            if (apu.dmc.bytes_remaining == 0) {
+                apu.dmc.cur_addr        = apu.dmc.sample_addr;
+                apu.dmc.bytes_remaining = apu.dmc.sample_len;
+                if (apu.dmc.bits_remaining == 0) apu.dmc.bits_remaining = 8;
+            }
+        } else {
+            apu.dmc.bytes_remaining = 0;
+        }
         break;
     /* Frame counter $4017 */
     case 0x4017:
@@ -151,11 +170,14 @@ void apu_write(uint16_t addr, uint8_t val) {
 }
 
 uint8_t apu_read_status(void) {
-    return ((apu.pulse[0].length    > 0) ? 0x01 : 0)
-         | ((apu.pulse[1].length    > 0) ? 0x02 : 0)
-         | ((apu.tri.length         > 0) ? 0x04 : 0)
-         | ((apu.noise.length       > 0) ? 0x08 : 0)
-         | ((apu.dmc.bytes_remaining > 0) ? 0x10 : 0);
+    uint8_t v = ((apu.pulse[0].length     > 0) ? 0x01 : 0)
+              | ((apu.pulse[1].length     > 0) ? 0x02 : 0)
+              | ((apu.tri.length          > 0) ? 0x04 : 0)
+              | ((apu.noise.length        > 0) ? 0x08 : 0)
+              | ((apu.dmc.bytes_remaining > 0) ? 0x10 : 0)
+              | (apu.dmc.irq_flag              ? 0x80 : 0);
+    apu.dmc.irq_flag = 0; /* reading $4015 clears DMC IRQ flag */
+    return v;
 }
 
 /* =========================================================================
@@ -379,6 +401,33 @@ void apu_step(void) {
             apu.tri.seq_pos = (apu.tri.seq_pos + 1) & 31;
         } else {
             apu.tri.timer--;
+        }
+    }
+
+    /* DMC IRQ timing: count down CPU cycles until sample would finish playing.
+       We don't do actual sample playback (no mem_read side-effects), but we
+       fire the IRQ at the correct time so games that use it as a timer work. */
+    if (apu.dmc.enabled && apu.dmc.bytes_remaining > 0 && apu.dmc.timer_reload > 0) {
+        if (apu.dmc.timer > 0) {
+            apu.dmc.timer--;
+        } else {
+            apu.dmc.timer = apu.dmc.timer_reload;
+            if (apu.dmc.bits_remaining > 0) apu.dmc.bits_remaining--;
+            if (apu.dmc.bits_remaining == 0) {
+                apu.dmc.bits_remaining = 8;
+                if (apu.dmc.bytes_remaining > 0) apu.dmc.bytes_remaining--;
+                if (apu.dmc.bytes_remaining == 0) {
+                    if (apu.dmc.loop) {
+                        apu.dmc.bytes_remaining = apu.dmc.sample_len;
+                    } else {
+                        apu.dmc.enabled = 0;
+                        if (apu.dmc.irq_en) {
+                            apu.dmc.irq_flag = 1;
+                            nes_irq();
+                        }
+                    }
+                }
+            }
         }
     }
 

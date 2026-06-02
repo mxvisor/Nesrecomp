@@ -73,7 +73,13 @@ typedef struct {
         uint8_t  output;            /* current output level (0-127) */
         uint16_t sample_addr, sample_len;
         uint16_t cur_addr, bytes_remaining;
-        uint8_t  sample_buf, bits_remaining, silence;
+        uint8_t  sample_buf;          /* fetch buffer (loaded from memory) */
+        uint8_t  buf_full;            /* fetch buffer has unread byte */
+        uint8_t  out_shift;           /* output shift register */
+        uint8_t  bits_remaining;      /* bits left in out_shift */
+        uint8_t  silence;             /* output unit silent */
+        uint16_t timer, timer_reload; /* DMC rate timer */
+        uint8_t  irq_flag;            /* DMC IRQ pending */
     } dmc;
 
     /* Frame sequencer */

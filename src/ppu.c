@@ -2,6 +2,7 @@
 #include "ppu.h"
 #include "mapper.h"
 #include "interrupts.h"
+#include "cpu.h"
 #include <stdio.h>
 
 PPU ppu;
@@ -96,7 +97,12 @@ static void vram_write(uint16_t addr, uint8_t val) {
     if (addr < 0x2000) { mapper_chr_write(addr, val); return; }
     if (addr < 0x3F00) {
         if (mapper.id == 5) { mmc5_nt_write(addr, val); return; }
-        ppu.vram[mirror_nt(addr - 0x2000)] = val; return;
+        uint16_t offs = mirror_nt(addr - 0x2000);
+        /* Trace all page-1 NT writes (offsets $400-$7FF) when mirroring=4 */
+        if (mapper.mirroring == 4 && offs >= 0x400 && offs < 0x800)
+            fprintf(stderr, "[nt1] write $%02X offs=$%03X scan=%d mir=%d\n",
+                    val, offs, ppu.scanline, mapper.mirroring);
+        ppu.vram[offs] = val; return;
     }
     addr &= 0x1F;
     if (addr == 0x10 || addr == 0x14 || addr == 0x18 || addr == 0x1C)
@@ -142,6 +148,8 @@ void ppu_write(uint8_t reg, uint8_t val) {
         ppu.t_addr = (ppu.t_addr & ~0x0C00) | ((uint16_t)(val & 3) << 10);
         if ((val & 0x80) && (ppu.regs[2] & 0x80))
             nes_nmi();
+        break;
+    case 1:
         break;
     case 3: break;
     case 4:
@@ -355,8 +363,10 @@ void ppu_step(void) {
                         uint8_t hi = (ppu.sp_pattern_hi[i] >> (7 - sx)) & 1;
                         uint8_t p  = lo | (hi << 1);
                         if (!p) continue;
-                        if (i == 0 && ppu.sp_zero_on_line && bg_pixel && x < 255)
-                            ppu.regs[2] |= 0x40;
+                        if (i == 0 && ppu.sp_zero_on_line && x < 255) {
+                            if (bg_pixel)
+                                ppu.regs[2] |= 0x40;
+                        }
                         sp_pixel    = p;
                         sp_pal      = (ppu.sp_attr[i] & 3) + 4;
                         sp_priority = (ppu.sp_attr[i] >> 5) & 1;

@@ -49,11 +49,11 @@ void mapper_init(int id, int prg_banks, int chr_banks, int mirroring) {
         mapper.m4_irq_reload  = 0;
     }
     
-    /* AxROM (Mapper 7) defaults */
+    /* AxROM (Mapper 7) defaults: power-on selects bank 0, one-screen lower */
     if (id == 7) {
-    mapper.m1_prg_bank = mapper.prg_banks - 1;  /* last bank */
-    mapper.mirroring = 3;
-}
+        mapper.m1_prg_bank = 0;
+        mapper.mirroring = 3; /* one-screen lower */
+    }
 }
 
 /* =========================================================================
@@ -222,8 +222,15 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
         break;
 
     case 7: /* AxROM */
-        mapper.m1_prg_bank = val & 0x07;
-        mapper.mirroring = (val & 0x10) ? 4 : 3;
+        {
+            uint8_t bank = val & 0x07;
+            uint8_t mir  = (val & 0x10) ? 4 : 3;
+            //if (bank != mapper.m1_prg_bank || mir != mapper.mirroring)
+            //    fprintf(stderr, "[axrom] bank %d->%d mir=%d->%d PC=$%04X scan=%d\n",
+            //            mapper.m1_prg_bank, bank, mapper.mirroring, mir, cpu.PC, ppu.scanline);
+            mapper.m1_prg_bank = bank;
+            mapper.mirroring   = mir;
+        }
         break;
     }
 }
@@ -407,7 +414,14 @@ uint8_t mapper_chr_read(uint16_t addr) {
 void mapper_chr_write(uint16_t addr, uint8_t val) {
     /* CHR-RAM */
     if (mapper.chr_banks == 0) {
-        ppu.chr[addr & 0x1FFF] = val;
+        uint16_t eff = addr & 0x1FFF;
+        /* Trace all CHR writes during bank 2 */
+        //if (mapper.m1_prg_bank == 2)
+        //    fprintf(stderr, "[chr2] vram$%04X=%02X PC=$%04X\n", eff, val, cpu.PC);
+        /* Trace CHR writes to BG tile $00 ($1000-$100F) */
+        //if (eff >= 0x1000 && eff < 0x1010)
+        //    fprintf(stderr, "[chrT0] vram$%04X=%02X scan=%d\n", eff, val, ppu.scanline);
+        ppu.chr[eff] = val;
     }
 }
 

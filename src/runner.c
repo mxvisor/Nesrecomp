@@ -237,8 +237,9 @@ static int widescreen = 0;
 static int fps_counter = 0;
 static Uint32 fps_timer = 0;
 
-volatile int g_nmi_pending = 0;
-volatile int g_irq_pending = 0;
+volatile int g_nmi_pending    = 0;
+volatile int g_irq_pending    = 0;
+         int g_nmi_just_fired  = 0;  /* set when NMI processed, cleared in ring-buf block */
 
 void nes_nmi(void) {
     g_nmi_pending = 1;
@@ -551,7 +552,8 @@ void runner_run(void) {
                 controller[1] = c1;
             }
 
-            g_nmi_pending = 0;
+            g_nmi_pending    = 0;
+            g_nmi_just_fired = 1;
 
             stack_push((cpu.PC >> 8) & 0xFF);
             stack_push(cpu.PC & 0xFF);
@@ -561,6 +563,10 @@ void runner_run(void) {
 
             cpu.PC = mem_read(0xFFFA) |
                     ((uint16_t)mem_read(0xFFFB) << 8);
+
+            /* NMI delivery takes 7 CPU cycles on real 6502; advance PPU accordingly */
+            for (int _i = 0; _i < 7 * 3; _i++)
+                ppu_step();
         }
 
         if (g_irq_pending && !cpu.I) {
@@ -575,6 +581,86 @@ void runner_run(void) {
 
             cpu.PC = mem_read(0xFFFE) |
                     ((uint16_t)mem_read(0xFFFF) << 8);
+
+            /* IRQ delivery takes 7 CPU cycles on real 6502; advance PPU accordingly */
+            for (int _i = 0; _i < 7 * 3; _i++)
+                ppu_step();
+        }
+
+        /* PC ring buffer for stuck-loop detection */
+        {
+            static uint16_t pc_ring[64]    = {0};
+            static int      pc_ring_pos    = 0;
+            static uint64_t cycles_no_nmi  = 0;
+            static int      stuck_reported = 0;
+            static int      nmi_ever_fired = 0;
+
+            extern int g_nmi_just_fired;
+            if (g_nmi_just_fired) {
+                nmi_ever_fired   = 1;
+                cycles_no_nmi    = 0;
+                stuck_reported   = 0;
+                g_nmi_just_fired = 0;
+            }
+            pc_ring[pc_ring_pos & 63] = cpu.PC;
+            pc_ring_pos++;
+            if (nmi_ever_fired)
+                cycles_no_nmi += (g_cpu_cycles ? g_cpu_cycles : 1);
+
+            /* ~3 frames without NMI = stuck (3*29780 cycles) */
+            if (nmi_ever_fired && cycles_no_nmi > 90000 && !stuck_reported) {
+                stuck_reported = 1;
+                fprintf(stderr, "[stuck] No NMI for %llu cycles! PC=$%04X bank=%d. Last 32 PCs:\n",
+                        (unsigned long long)cycles_no_nmi,
+                        cpu.PC, mapper.m1_prg_bank);
+                for (int _i = 32; _i > 0; _i--) {
+                    int idx = (pc_ring_pos - _i) & 63;
+                    fprintf(stderr, "  $%04X", pc_ring[idx]);
+                    if (_i % 8 == 1) fprintf(stderr, "\n");
+                }
+                extern uint8_t ram[2048];
+                fprintf(stderr, "[stuck] RAM: $0013=%02X $0014=%02X $0023=%02X $0024=%02X $09=%02X $10=%02X\n",
+                        ram[0x13], ram[0x14], ram[0x23], ram[0x24],
+                        ram[0x09], ram[0x10]);
+                fprintf(stderr, "[stuck] PPU: $2000=%02X $2001=%02X $2002=%02X SP=$%02X A=$%02X\n",
+                        ppu.regs[0], ppu.regs[1], ppu.regs[2], cpu.SP, cpu.A);
+                /* Check if sprite-0 (tile 0) has any pixels in CHR RAM */
+                {
+                    int has_px = 0;
+                    for (int b = 0; b < 16; b++) if (ppu.chr[b]) { has_px = 1; break; }
+                    fprintf(stderr, "[stuck] CHR tile0: %s OAM[0]=%02X,%02X,%02X,%02X\n",
+                            has_px ? "has pixels" : "BLANK",
+                            ppu.oam[0], ppu.oam[1], ppu.oam[2], ppu.oam[3]);
+                    fprintf(stderr, "[stuck] CHR tile0 bytes: ");
+                    for (int b = 0; b < 16; b++) fprintf(stderr, "%02X ", ppu.chr[b]);
+                    fprintf(stderr, "\n");
+                    /* Nametable at column 31, rows 3-4 — respect current mirroring */
+                    {
+                        uint16_t base = (mapper.mirroring == 4) ? 0x0400 : 0x0000;
+                        uint16_t nt_idx_3 = base | ((3*32+31) & 0x3FF);
+                        uint16_t nt_idx_4 = base | ((4*32+31) & 0x3FF);
+                        fprintf(stderr, "[stuck] NT[row3,col31]=%02X NT[row4,col31]=%02X (mir=%d)\n",
+                                ppu.vram[nt_idx_3], ppu.vram[nt_idx_4], mapper.mirroring);
+                    }
+                    /* $2000 bit4=1 → BG uses PT1 ($1000); bit3=0 → sprite PT0 ($0000) */
+                    uint8_t bg_pt = (ppu.regs[0] & 0x10) ? 1 : 0;
+                    uint8_t sp_pt = (ppu.regs[0] & 0x08) ? 1 : 0;
+                    uint16_t bg_t61_base = (bg_pt ? 0x1000 : 0x0000) + 0x610;
+                    fprintf(stderr, "[stuck] BG PT=%d SP PT=%d  BG tile$61 base=$%04X bytes: ",
+                            bg_pt, sp_pt, bg_t61_base);
+                    for (int b = 0; b < 16; b++) fprintf(stderr, "%02X ", ppu.chr[bg_t61_base + b]);
+                    fprintf(stderr, "\n");
+                    /* Scroll state: v_addr and t_addr encode scroll position */
+                    fprintf(stderr, "[stuck] v_addr=$%04X t_addr=$%04X fine_x=%d scan=%d cycle=%d\n",
+                            ppu.v_addr, ppu.t_addr, ppu.fine_x, ppu.scanline, ppu.cycle);
+                    /* Coarse scroll from v_addr: bits 4-0 = coarse X, bits 9-5 = coarse Y */
+                    int coarse_x = ppu.v_addr & 0x1F;
+                    int coarse_y = (ppu.v_addr >> 5) & 0x1F;
+                    int fine_y = (ppu.v_addr >> 12) & 7;
+                    fprintf(stderr, "[stuck] scroll: coarseX=%d coarseY=%d fineY=%d (BG starts at screen Y=%d)\n",
+                            coarse_x, coarse_y, fine_y, coarse_y*8 + fine_y);
+                }
+            }
         }
 
         call_by_address(cpu.PC);

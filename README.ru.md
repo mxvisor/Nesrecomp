@@ -186,6 +186,7 @@ docs/                 — справочная документация — не
 | 3  | CNROM    | Фиксированный PRG; переключаемый CHR 8 КБ                                              |
 | 4  | MMC3     | Гранулярность PRG/CHR 8 КБ; scanline IRQ; переключаемые банки через интерпретатор      |
 | 5  | MMC5     | PRG mode 2, CHR 8×16, ExRAM; переключаемые банки через интерпретатор                   |
+| 7  | AxROM    | PRG 32 КБ switchable; CHR-RAM; one-screen mirroring; переключаемый банк через интерпретатор |
 
 ### Протестированные игры
 
@@ -198,6 +199,7 @@ docs/                 — справочная документация — не
 | Adventure Island      | 3      | ✅     | ✅       | ✅       | CNROM, переключаемый CHR 32 КБ                  |
 | Felix the Cat         | 4      | ✅     | ✅       | ✅       | MMC3 scanline IRQ                               |
 | Castlevania III       | 5      | ✅     | ✅       | ✅       | MMC5 PRG mode 2; переключаемые банки через интерпретатор |
+| Battletoads           | 7      | ✅     | ✅       | ✅       | AxROM, 128 КБ PRG, CHR-RAM; все банки через интерпретатор |
 
 ## Скриншоты
 
@@ -209,8 +211,8 @@ docs/                 — справочная документация — не
 | Castlevania III | Contra Force | Felix the Cat |
 | ![Super Mario Bros.](docs/assets/Mario.png) | ![The Little Mermaid](docs/assets/Mermaid.png) | ![Super C](docs/assets/Superc.png) |
 | Super Mario Bros. | The Little Mermaid | Super C |
-| ![The Legend of Zelda](docs/assets/Zelda.png) | | |
-| The Legend of Zelda | | |
+| ![The Legend of Zelda](docs/assets/Zelda.png) | ![Battletoads](docs/assets/Battletoads.png) | |
+| The Legend of Zelda | Battletoads | |
 
 ## Лицензия
 

@@ -567,6 +567,10 @@ class Disassembler:
             else:
                 offset = addr - 0x8000  # switchable
             return self.prg[offset] if offset < len(self.prg) else 0xFF
+        # AxROM: entire $8000-$FFFF = one 32KB bank; bank 0 at reset
+        if self.mapper == 7:
+            offset = addr - 0x8000  # bank 0 starts at PRG offset 0
+            return self.prg[offset] if offset < len(self.prg) else 0xFF
         # MMC3: 8KB bank granularity with two switchable slots and two fixed slots
         if self.mapper == 4:
             if addr >= 0xE000:
@@ -604,6 +608,8 @@ class Disassembler:
             return 0x8000 <= addr < 0xC000
         if self.mapper == 5:
             return 0x8000 <= addr < 0xE000  # $E000-$FFFF always fixed
+        if self.mapper == 7:
+            return True  # AxROM: entire $8000-$FFFF is one switchable 32KB bank
         return False
 
     def read_vector(self, addr: int) -> int:

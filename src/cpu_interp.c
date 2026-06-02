@@ -65,22 +65,22 @@ int cpu_interp_step(void) {
     case 0xA5: cpu.A=RD(RD(pc+1));cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
     case 0xB5: cpu.A=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; SET_NZ(cpu.A); cycles=4; break;
     case 0xAD: addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0xBD: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0xB9: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
+    case 0xBD: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
+    case 0xB9: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     case 0xA1: cpu.A=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0xB1: cpu.A=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5; break;
+    case 0xB1: { uint16_t _b=rd16(RD(pc+1)); addr=_b+cpu.Y; cpu.A=RD(addr); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- LDX --- */
     case 0xA2: cpu.X=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.X); break;
     case 0xA6: cpu.X=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.X); cycles=3; break;
     case 0xB6: cpu.X=RD((uint8_t)(RD(pc+1)+cpu.Y)); cpu.PC+=2; SET_NZ(cpu.X); cycles=4; break;
     case 0xAE: addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.X=RD(addr); cpu.PC+=3; SET_NZ(cpu.X); cycles=4; break;
-    case 0xBE: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.X=RD(addr); cpu.PC+=3; SET_NZ(cpu.X); cycles=4; break;
+    case 0xBE: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.X=RD(addr); cpu.PC+=3; SET_NZ(cpu.X); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- LDY --- */
     case 0xA0: cpu.Y=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.Y); break;
     case 0xA4: cpu.Y=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.Y); cycles=3; break;
     case 0xB4: cpu.Y=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; SET_NZ(cpu.Y); cycles=4; break;
     case 0xAC: addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.Y=RD(addr); cpu.PC+=3; SET_NZ(cpu.Y); cycles=4; break;
-    case 0xBC: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.Y=RD(addr); cpu.PC+=3; SET_NZ(cpu.Y); cycles=4; break;
+    case 0xBC: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.Y=RD(addr); cpu.PC+=3; SET_NZ(cpu.Y); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     /* --- STA --- */
     case 0x85: WR(RD(pc+1),cpu.A); cpu.PC+=2; cycles=3; break;
     case 0x95: WR((uint8_t)(RD(pc+1)+cpu.X),cpu.A); cpu.PC+=2; cycles=4; break;
@@ -114,10 +114,10 @@ int cpu_interp_step(void) {
     case 0x65: t8=RD(RD(pc+1)); cpu.PC+=2; cycles=3; goto do_adc;
     case 0x75: t8=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=4; goto do_adc;
     case 0x6D: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cycles=4; goto do_adc;
-    case 0x7D: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; cycles=4; goto do_adc;
-    case 0x79: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; cycles=4; goto do_adc;
+    case 0x7D: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); goto do_adc; }
+    case 0x79: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); goto do_adc; }
     case 0x61: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_adc;
-    case 0x71: t8=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; cycles=5;
+    case 0x71: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
     do_adc: { uint16_t r=cpu.A+t8+cpu.C;
               cpu.V=((~(cpu.A^t8))&(cpu.A^r)&0x80)?1:0;
               cpu.C=(r>0xFF)?1:0; cpu.A=(uint8_t)r; SET_NZ(cpu.A); break; }
@@ -126,10 +126,10 @@ int cpu_interp_step(void) {
     case 0xE5: t8=RD(RD(pc+1)); cpu.PC+=2; cycles=3; goto do_sbc;
     case 0xF5: t8=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=4; goto do_sbc;
     case 0xED: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cycles=4; goto do_sbc;
-    case 0xFD: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; cycles=4; goto do_sbc;
-    case 0xF9: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; cycles=4; goto do_sbc;
+    case 0xFD: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); goto do_sbc; }
+    case 0xF9: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); goto do_sbc; }
     case 0xE1: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_sbc;
-    case 0xF1: t8=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; cycles=5;
+    case 0xF1: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
     do_sbc: { uint16_t r=cpu.A-t8-(1-cpu.C);
               cpu.V=(((cpu.A^t8))&(cpu.A^r)&0x80)?1:0;
               cpu.C=(r<0x100)?1:0; cpu.A=(uint8_t)r; SET_NZ(cpu.A); break; }
@@ -138,28 +138,28 @@ int cpu_interp_step(void) {
     case 0x25: cpu.A&=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
     case 0x35: cpu.A&=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; SET_NZ(cpu.A); cycles=4; break;
     case 0x2D: cpu.A&=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x3D: cpu.A&=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x39: cpu.A&=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
+    case 0x3D: { uint8_t _lo=RD(pc+1); cpu.A&=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
+    case 0x39: { uint8_t _lo=RD(pc+1); cpu.A&=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     case 0x21: cpu.A&=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x31: cpu.A&=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5; break;
+    case 0x31: { uint16_t _b=rd16(RD(pc+1)); cpu.A&=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- ORA --- */
     case 0x09: cpu.A|=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); break;
     case 0x05: cpu.A|=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
     case 0x15: cpu.A|=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; SET_NZ(cpu.A); cycles=4; break;
     case 0x0D: cpu.A|=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x1D: cpu.A|=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x19: cpu.A|=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
+    case 0x1D: { uint8_t _lo=RD(pc+1); cpu.A|=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
+    case 0x19: { uint8_t _lo=RD(pc+1); cpu.A|=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     case 0x01: cpu.A|=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x11: cpu.A|=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5; break;
+    case 0x11: { uint16_t _b=rd16(RD(pc+1)); cpu.A|=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- EOR --- */
     case 0x49: cpu.A^=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); break;
     case 0x45: cpu.A^=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
     case 0x55: cpu.A^=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; SET_NZ(cpu.A); cycles=4; break;
     case 0x4D: cpu.A^=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x5D: cpu.A^=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0x59: cpu.A^=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
+    case 0x5D: { uint8_t _lo=RD(pc+1); cpu.A^=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
+    case 0x59: { uint8_t _lo=RD(pc+1); cpu.A^=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     case 0x41: cpu.A^=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x51: cpu.A^=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5; break;
+    case 0x51: { uint16_t _b=rd16(RD(pc+1)); cpu.A^=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- BIT --- */
     case 0x24: t8=RD(RD(pc+1)); cpu.PC+=2; cpu.N=(t8>>7)&1; cpu.V=(t8>>6)&1; cpu.Z=(cpu.A&t8)?0:1; cycles=3; break;
     case 0x2C: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cpu.N=(t8>>7)&1; cpu.V=(t8>>6)&1; cpu.Z=(cpu.A&t8)?0:1; cycles=4; break;
@@ -168,10 +168,10 @@ int cpu_interp_step(void) {
     case 0xC5: t8=RD(RD(pc+1)); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=3; break;
     case 0xD5: t8=RD((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4; break;
     case 0xCD: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4; break;
-    case 0xDD: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4; break;
-    case 0xD9: t8=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4; break;
+    case 0xDD: { uint8_t _lo=RD(pc+1); t8=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
+    case 0xD9: { uint8_t _lo=RD(pc+1); t8=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     case 0xC1: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=6; break;
-    case 0xD1: t8=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=5; break;
+    case 0xD1: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- CPX --- */
     case 0xE0: t8=RD(pc+1); cpu.PC+=2; cpu.C=(cpu.X>=t8)?1:0; SET_NZ((uint8_t)(cpu.X-t8)); break;
     case 0xE4: t8=RD(RD(pc+1)); cpu.PC+=2; cpu.C=(cpu.X>=t8)?1:0; SET_NZ((uint8_t)(cpu.X-t8)); cycles=3; break;
@@ -241,14 +241,21 @@ int cpu_interp_step(void) {
     case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC:
         cpu.PC+=3; cycles=4; break;  /* NOP abx */
     /* --- Branches --- */
-    case 0x90: rel=(int8_t)RD(pc+1); cpu.PC+=2; if(!cpu.C){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0xB0: rel=(int8_t)RD(pc+1); cpu.PC+=2; if( cpu.C){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0xF0: rel=(int8_t)RD(pc+1); cpu.PC+=2; if( cpu.Z){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0xD0: rel=(int8_t)RD(pc+1); cpu.PC+=2; if(!cpu.Z){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0x30: rel=(int8_t)RD(pc+1); cpu.PC+=2; if( cpu.N){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0x10: rel=(int8_t)RD(pc+1); cpu.PC+=2; if(!cpu.N){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0x50: rel=(int8_t)RD(pc+1); cpu.PC+=2; if(!cpu.V){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
-    case 0x70: rel=(int8_t)RD(pc+1); cpu.PC+=2; if( cpu.V){ cpu.PC+=(uint16_t)rel; cycles=3; } break;
+    /* branches: 2 cycles not taken, 3 taken, 4 taken+page-cross */
+#define BRANCH(cond) do { \
+    rel=(int8_t)RD(pc+1); cpu.PC+=2; \
+    if(cond){ uint16_t old=cpu.PC; cpu.PC+=(uint16_t)rel; \
+              cycles = ((old^cpu.PC)&0xFF00) ? 4 : 3; } \
+    } while(0)
+    case 0x90: BRANCH(!cpu.C); break;
+    case 0xB0: BRANCH( cpu.C); break;
+    case 0xF0: BRANCH( cpu.Z); break;
+    case 0xD0: BRANCH(!cpu.Z); break;
+    case 0x30: BRANCH( cpu.N); break;
+    case 0x10: BRANCH(!cpu.N); break;
+    case 0x50: BRANCH(!cpu.V); break;
+    case 0x70: BRANCH( cpu.V); break;
+#undef BRANCH
     /* --- JMP --- */
     case 0x4C: cpu.PC=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cycles=3; break;
     case 0x6C: cpu.PC=rd16_bug(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cycles=5; break;
