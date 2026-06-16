@@ -28,8 +28,11 @@ static int g_interp_mode = 0;
 static FILE    *g_frame_hash_file  = NULL;
 static uint32_t g_frame_hash_count = 0;
 static uint32_t g_frame_limit      = 0;   /* stop after N frames (0 = unlimited) */
-/* FCEUX ppudead=2: first 2 VBL frames force gray output (CPU/NMI run normally).
- * Affects only the --dump-frames framebuffer hash, not lag/--dump-sync. */
+/* PPU power-up warm-up (FCEUX ppudead=2): for the first 2 frames after reset
+ * the PPU sets no VBL flag and fires no NMI (ppu.c gates the scanline-241 block
+ * on this), so the game spins in its reset wait-loop — matching hardware/FCEUX.
+ * Decremented once per frame in runner_run AFTER the dump logic reads it.
+ * Critical for FM2 startup alignment (fixed Zelda: 78.5%→98.96% lag match). */
 int             g_ppudead          = 2;
 
 /* --dump-sync mode: lag+RAM-hash log (format: "frame lag lagcount djb2").
@@ -759,7 +762,6 @@ void runner_run(void) {
                 if (g_ppudead > 0) {
                     /* FCEUX ppudead: force gray (palette index 0 = 0x75,0x75,0x75) */
                     h = 0x4A964AF8u;
-                    g_ppudead--;
                 } else {
                     static uint8_t argb_buf[SCREEN_W * SCREEN_H * 4];
                     for (int _i = 0; _i < SCREEN_W * SCREEN_H; _i++) {
@@ -794,6 +796,10 @@ void runner_run(void) {
                 if (g_frame_limit && g_current_frame >= (int)g_frame_limit)
                     g_running = 0;
             }
+
+            /* Count down warm-up once per frame, AFTER both dumps read it
+             * (framebuffer gray + PPU VBL/NMI suppression key off g_ppudead). */
+            if (g_ppudead > 0) g_ppudead--;
 
             /* Advance FM2 once per VBlank — AFTER hash emit, so next frame uses new input */
             if (fm2_active()) {

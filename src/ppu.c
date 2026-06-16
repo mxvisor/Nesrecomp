@@ -412,14 +412,20 @@ void ppu_step(void) {
 
     /* ---- VBlank: scanline 241, dot 1 ---- */
     if (scanline == 241 && dot == 1) {
-        ppu.regs[2] |= 0x80;
-        ppu.in_vblank = 1;
-        ppu.frame_ready = 1;
-        ppu.nmi_suppressed = 0;
-        if (NMI_EN) nes_nmi();
-        /* MMC5: end of frame */
-        mapper.m5_in_frame = 0;
-        mapper.m5_scanline = 0;
+        ppu.frame_ready = 1;          /* internal frame boundary — always */
+        /* PPU power-up warm-up: real hardware sets no reliable VBL flag for the
+         * first frames after reset, so the game spins in its reset wait-loop.
+         * FCEUX/Mesen model this; without it our game starts early and its FM2
+         * input lands a frame off (Zelda desync). g_ppudead counts the frames. */
+        if (g_ppudead == 0) {
+            ppu.regs[2] |= 0x80;
+            ppu.in_vblank = 1;
+            ppu.nmi_suppressed = 0;
+            if (NMI_EN) nes_nmi();
+            /* MMC5: end of frame */
+            mapper.m5_in_frame = 0;
+            mapper.m5_scanline = 0;
+        }
     }
 
     /* MMC5: track in-frame state — starts at pre-render scanline dot 1 */
