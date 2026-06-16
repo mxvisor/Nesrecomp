@@ -8,6 +8,7 @@ int  fm2_open(const char *path);
 /* Advance one NMI frame.  Fills *c0 / *c1 with controller bytes.
    Returns 1 while frames remain, 0 when all files are exhausted. */
 int  fm2_tick(uint8_t *c0, uint8_t *c1);
+int  fm2_tick_cmd(uint8_t *c0, uint8_t *c1, uint8_t *cmd); /* cmd: bit0=power reset, bit1=soft reset */
 
 /* True while playback is active (buf loaded and frames remain). */
 int  fm2_active(void);

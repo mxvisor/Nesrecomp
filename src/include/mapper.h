@@ -84,4 +84,13 @@ void    mapper_scanline(void);
 uint8_t mapper5_read(uint16_t addr);
 void    mapper5_write(uint16_t addr, uint8_t val);
 
+/*
+ * mapper_get_prg_bank(slot) — return the currently selected PRG bank index
+ * for the given switchable slot (0-based).
+ * Used by the generated bank-aware dispatch table.
+ *   UNROM (mapper 2): slot 0 → $8000-$BFFF switchable bank
+ *   MMC1  (mapper 1): slot 0 → $8000-$BFFF or $C000-$DFFF (mode-dependent)
+ */
+uint8_t mapper_get_prg_bank(int slot);
+
 #endif /* MAPPER_H */

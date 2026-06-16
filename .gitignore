@@ -19,3 +19,22 @@ fm2/*
 .history/
 .vscode-ctags
 __pycache__/
+
+# external tool symlinks / binaries (absolute paths, not portable)
+/Mesen
+/fceux
+/SDL2.dll
+
+# temporary working files
+/tmp/
+/tools/fceux_sync.txt
+
+# generated lag/sync dumps — regenerate with tools/compare_lags.sh
+/lags/
+
+# docs working material — not tracked
+/docs/nesdev/
+
+# mesen-format player (unused, possibly stale)
+/src/mmo_player.c
+/src/include/mmo_player.h

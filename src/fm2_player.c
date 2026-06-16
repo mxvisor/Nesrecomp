@@ -44,25 +44,25 @@ static int load_file(const char *path) {
     if (raw == 0) { fclose(f); return 0; }
 
     free(s_buf);
-    s_buf = malloc(raw * 2);
+    s_buf = malloc(raw * 3);
     if (!s_buf) { fclose(f); return 0; }
 
     rewind(f);
     int idx = 0;
     while (fgets(line, sizeof(line), f) && idx < raw) {
         if (line[0] != '|') continue;
-        int skip;
+        int cmd;
         char p0[16] = "", p1[16] = "";
-        int n = sscanf(line, "|%d|%8[^|]|%8[^|]", &skip, p0, p1);
+        int n = sscanf(line, "|%d|%8[^|]|%8[^|]", &cmd, p0, p1);
         if (n < 2) continue;
         uint8_t c0 = parse_buttons(p0);
         uint8_t c1 = parse_buttons(p1);
-        int repeat = skip + 1;
-        for (int r = 0; r < repeat && idx < raw; r++) {
-            s_buf[idx * 2 + 0] = c0;
-            s_buf[idx * 2 + 1] = c1;
-            idx++;
-        }
+        /* cmd is the FM2 command byte (bitmask: bit0=power reset, bit1=soft reset).
+         * It is NOT a repeat count — each line is always exactly one frame. */
+        s_buf[idx * 3 + 0] = (uint8_t)cmd;
+        s_buf[idx * 3 + 1] = c0;
+        s_buf[idx * 3 + 2] = c1;
+        idx++;
     }
 
     s_total = idx;
@@ -132,12 +132,19 @@ int fm2_open(const char *path) {
 }
 
 int fm2_tick(uint8_t *c0, uint8_t *c1) {
+    return fm2_tick_cmd(c0, c1, NULL);
+}
+
+int fm2_tick_cmd(uint8_t *c0, uint8_t *c1, uint8_t *cmd) {
     if (!s_buf || s_frame >= s_total) return 0;
-    *c0 = s_buf[s_frame * 2 + 0];
-    *c1 = s_buf[s_frame * 2 + 1];
+    if (cmd) *cmd = s_buf[s_frame * 3 + 0];
+    *c0 = s_buf[s_frame * 3 + 1];
+    *c1 = s_buf[s_frame * 3 + 2];
     if (++s_frame >= s_total) {
         fprintf(stderr, "[fm2] playback complete (%d frames)\n", s_total);
-        if (!queue_next()) return 0;  /* advance to next file in queue */
+        queue_next();  /* advance to next file in queue if available */
+        /* Return 1 so caller runs one more frame with this input applied.
+         * The subsequent call will find s_frame >= s_total and return 0. */
     }
     return 1;
 }

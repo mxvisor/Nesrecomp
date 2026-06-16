@@ -1,8 +1,5 @@
 /* ppu: PPU 2C02 — rendering, CHR banking, interrupts */
-#include "ppu.h"
-#include "mapper.h"
-#include "interrupts.h"
-#include "cpu.h"
+#include "runner.h"
 #include <stdio.h>
 
 PPU ppu;
@@ -384,6 +381,7 @@ void ppu_step(void) {
                 }
                 uint8_t color = vram_read(0x3F00 + pal_addr);
                 ppu.framebuf[scanline * SCREEN_W + out_x] = PALETTE[color & 0x3F];
+                ppu.indexbuf[scanline * SCREEN_W + out_x] = color & 0x3F;
             }
 
             ppu.bg_lo     <<= 1; ppu.bg_hi     <<= 1;
@@ -408,12 +406,14 @@ void ppu_step(void) {
     /* ---- Pre-render scanline 261: special ops at dot 1 ---- */
     if (scanline == 261 && dot == 1) {
         ppu.regs[2] &= ~0xE0;
+        ppu.in_vblank = 0;
         ppu.nmi_suppressed = 0;
     }
 
     /* ---- VBlank: scanline 241, dot 1 ---- */
     if (scanline == 241 && dot == 1) {
         ppu.regs[2] |= 0x80;
+        ppu.in_vblank = 1;
         ppu.frame_ready = 1;
         ppu.nmi_suppressed = 0;
         if (NMI_EN) nes_nmi();

@@ -62,6 +62,7 @@ static inline uint16_t ind_addr(uint16_t base) {
 /* Controller */
 extern uint8_t controller[2];   /* live button state */
 extern uint8_t ctrl_shift[2];   /* shift register */
+extern int     g_lag_flag;      /* 1 = no controller read this frame */
 uint8_t ctrl_read(int port);
 void    ctrl_write(uint8_t val);
 

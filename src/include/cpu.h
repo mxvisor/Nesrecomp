@@ -44,6 +44,14 @@ static inline void set_P(uint8_t p) {
 
 /* Cycle counter — accumulated CPU cycles between PPU/APU steps */
 extern uint32_t g_cpu_cycles;
+/* Total CPU cycles since power-on (used for OAM DMA alignment parity) */
+extern uint64_t g_total_cpu_cycles;
+
+/*
+ * Flush accumulated CPU cycles to PPU/APU.
+ * Called from generated code before sensitive memory accesses.
+ */
+void tick_ppu_apu(void);
 
 /*
  * Interpreter — cpu_interp.c

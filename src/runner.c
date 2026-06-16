@@ -21,6 +21,66 @@ static int g_headless = 0;
 static int g_seconds  = 30;
 static uint32_t g_run_until = 0;
 
+/* Interpreter mode — use cpu_interp_step instead of recompiled dispatch */
+static int g_interp_mode = 0;
+
+/* Frame hash dump — per-frame CRC32 to file for accuracy comparison with FCEUX */
+static FILE    *g_frame_hash_file  = NULL;
+static uint32_t g_frame_hash_count = 0;
+static uint32_t g_frame_limit      = 0;   /* stop after N frames (0 = unlimited) */
+/* FCEUX ppudead=2: first 2 VBL frames force gray output (CPU/NMI run normally).
+ * Affects only the --dump-frames framebuffer hash, not lag/--dump-sync. */
+int             g_ppudead          = 2;
+
+/* --dump-sync mode: lag+RAM-hash log (format: "frame lag lagcount djb2").
+ * lag and RAM are captured together at each VBL boundary; compare_lags.sh
+ * aligns our log to FCEUX's with a constant offset (see runner_run). */
+static FILE    *g_sync_file        = NULL;
+static uint32_t g_lag_count        = 0;   /* cumulative lag-frame counter */
+
+/* Frame counter for debug traces */
+int g_current_frame = 0;
+
+/* Total CPU cycles since power-on */
+uint64_t g_total_cpu_cycles = 0;
+
+/* FCEUX default NTSC palette (64 entries) — must match FCEUX for hash comparison */
+static const uint8_t FCEUX_PAL_R[64] = {
+    0x75, 0x24, 0x00, 0x45, 0x8E, 0xAA, 0xA6, 0x7D, 0x41, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
+    0xBE, 0x00, 0x20, 0x82, 0xBE, 0xE7, 0xDB, 0xCB, 0x8A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xFF, 0x3C, 0x5D, 0xCF, 0xF7, 0xFF, 0xFF, 0xFF, 0xF3, 0x82, 0x4D, 0x59, 0x00, 0x79, 0x00, 0x00,
+    0xFF, 0xAA, 0xC7, 0xD7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xE3, 0xAA, 0xB2, 0x9E, 0xC7, 0x00, 0x00,
+};
+static const uint8_t FCEUX_PAL_G[64] = {
+    0x75, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x2C, 0x45, 0x51, 0x3C, 0x3C, 0x00, 0x00, 0x00,
+    0xBE, 0x71, 0x38, 0x00, 0x00, 0x00, 0x28, 0x4D, 0x71, 0x96, 0xAA, 0x92, 0x82, 0x00, 0x00, 0x00,
+    0xFF, 0xBE, 0x96, 0x8A, 0x79, 0x75, 0x75, 0x9A, 0xBE, 0xD3, 0xDF, 0xFB, 0xEB, 0x79, 0x00, 0x00,
+    0xFF, 0xE7, 0xD7, 0xCB, 0xC7, 0xC7, 0xBE, 0xDB, 0xE7, 0xFF, 0xF3, 0xFF, 0xFF, 0xC7, 0x00, 0x00,
+};
+static const uint8_t FCEUX_PAL_B[64] = {
+    0x75, 0x8E, 0xAA, 0x9E, 0x75, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x5D, 0x00, 0x00, 0x00,
+    0xBE, 0xEF, 0xEF, 0xF3, 0xBE, 0x59, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x38, 0x8A, 0x00, 0x00, 0x00,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xB6, 0x61, 0x38, 0x3C, 0x10, 0x49, 0x9A, 0xDB, 0x79, 0x00, 0x00,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xDB, 0xB2, 0xAA, 0xA2, 0xA2, 0xBE, 0xCF, 0xF3, 0xC7, 0x00, 0x00,
+};
+
+static uint32_t crc32_buf(const uint8_t *buf, size_t len) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc >> 1) ^ (0xEDB88320u & -(uint32_t)(crc & 1));
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
+static uint32_t djb2_buf(const uint8_t *buf, size_t len) {
+    uint32_t h = 5381;
+    for (size_t i = 0; i < len; i++)
+        h = h * 33 + buf[i];
+    return h;
+}
+
 #ifndef DEFAULT_SCALE
 #define DEFAULT_SCALE 1
 #endif
@@ -255,6 +315,17 @@ void nes_reset(void) {
             ((uint16_t)mem_read(0xFFFD) << 8);
 }
 
+/* Flush accumulated CPU cycles to PPU/APU.
+ * Called from recompiled code before time-sensitive memory accesses (e.g. $2002 reads).
+ * Final instruction cycles are flushed by the main loop after call_by_address() returns. */
+void tick_ppu_apu(void) {
+    if (g_cpu_cycles) {
+        for (uint32_t _c = 0; _c < g_cpu_cycles; _c++) apu_step();
+        for (uint32_t _c = 0; _c < g_cpu_cycles * 3; _c++) ppu_step();
+        g_cpu_cycles = 0;
+    }
+}
+
 /* =========================================================================
    Learning mode — automatic collection of dispatch misses
    ========================================================================= */
@@ -438,7 +509,9 @@ int runner_init(const char *title, const char *rom_path) {
     cpu.SP = 0xFD;
     cpu.I  = 1;
 
-    memset(ram,  0, sizeof(ram));
+    /* FCEUX power-on RAM pattern: 00 00 00 00 FF FF FF FF repeating */
+    for (int _ri = 0; _ri < (int)sizeof(ram); _ri++)
+        ram[_ri] = (_ri & 4) ? 0xFF : 0x00;
     memset(sram, 0, sizeof(sram));
     sram_load();
     memset(&ppu, 0, sizeof(ppu));
@@ -468,12 +541,12 @@ int runner_init(const char *title, const char *rom_path) {
 void runner_run(void) {
 
     int event_divider = 0;
-    int last_frame_scanline = -1;
+
 
     while (g_running) {
 
         if (g_headless) {
-            if (SDL_GetTicks() >= g_run_until) {
+            if (!g_frame_hash_file && !fm2_active() && SDL_GetTicks() >= g_run_until) {
                 fprintf(stderr, "[runner] Headless run complete\n");
                 return;
             }
@@ -542,15 +615,6 @@ void runner_run(void) {
         }
 
         if (g_nmi_pending) {
-
-            /* Advance FM2 playback one frame */
-            if (fm2_active()) {
-                uint8_t c0 = 0, c1 = 0;
-                if (!fm2_tick(&c0, &c1))
-                    g_running = 0;
-                controller[0] = c0;
-                controller[1] = c1;
-            }
 
             g_nmi_pending    = 0;
             g_nmi_just_fired = 1;
@@ -663,10 +727,12 @@ void runner_run(void) {
             }
         }
 
-        call_by_address(cpu.PC);
+        if (g_interp_mode) cpu_interp_step(); else call_by_address(cpu.PC);
 
         if (g_cpu_cycles == 0)
             g_cpu_cycles = 1;
+
+        g_total_cpu_cycles += g_cpu_cycles;
 
         for (uint32_t c = 0; c < g_cpu_cycles; c++)
             apu_step();
@@ -676,11 +742,65 @@ void runner_run(void) {
 
         g_cpu_cycles = 0;
 
-        if (ppu.scanline == 241 &&
-            last_frame_scanline != 241) {
+        if (ppu.frame_ready) {
+            ppu.frame_ready = 0;
 
-            last_frame_scanline = 241;
+            g_current_frame++;
 
+            /* Frame hash dump for accuracy comparison */
+            if (g_frame_hash_file) {
+                uint32_t h;
+                if (g_ppudead > 0) {
+                    /* FCEUX ppudead: force gray (palette index 0 = 0x75,0x75,0x75) */
+                    h = 0x4A964AF8u;
+                    g_ppudead--;
+                } else {
+                    static uint8_t argb_buf[SCREEN_W * SCREEN_H * 4];
+                    for (int _i = 0; _i < SCREEN_W * SCREEN_H; _i++) {
+                        uint8_t _idx = ppu.indexbuf[_i] & 0x3F;
+                        argb_buf[_i*4+0] = 0x00;
+                        argb_buf[_i*4+1] = FCEUX_PAL_R[_idx];
+                        argb_buf[_i*4+2] = FCEUX_PAL_G[_idx];
+                        argb_buf[_i*4+3] = FCEUX_PAL_B[_idx];
+                    }
+                    h = crc32_buf(argb_buf, sizeof(argb_buf));
+                }
+                g_frame_hash_count++;
+                fprintf(g_frame_hash_file, "%06u %08X\n", g_frame_hash_count, h);
+                if (g_frame_limit && g_frame_hash_count >= g_frame_limit)
+                    g_running = 0;
+            }
+
+            /* Sync dump (lag-sequence metric — see AGENTS.md "Synchronization
+             * Methodology"). Capture lag bit AND RAM hash at the SAME boundary
+             * (this VBL start) so a single constant offset can align our log to
+             * FCEUX's registerafter log. Our boundary is before this frame's NMI
+             * handler runs; FCEUX's is after — that is a CONSTANT shift, which
+             * compare_lags.sh detects. The previous code captured lag and RAM at
+             * different boundaries, so no single offset could align both. */
+            if (g_sync_file) {
+                if (g_lag_flag) g_lag_count++;
+                fprintf(g_sync_file, "%d %d %u %08X\n",
+                        g_current_frame,
+                        g_lag_flag,
+                        g_lag_count,
+                        djb2_buf(ram, 0x800));
+                if (g_frame_limit && g_current_frame >= (int)g_frame_limit)
+                    g_running = 0;
+            }
+
+            /* Advance FM2 once per VBlank — AFTER hash emit, so next frame uses new input */
+            if (fm2_active()) {
+                g_lag_flag = 1;  /* reset lag flag for next frame */
+                uint8_t c0 = 0, c1 = 0, fm2_cmd = 0;
+                if (!fm2_tick_cmd(&c0, &c1, &fm2_cmd))
+                    g_running = 0;
+                controller[0] = c0;
+                controller[1] = c1;
+                if (fm2_cmd & 3) {
+                    nes_reset();
+                }
+            }
 
             if (!g_headless) {
                 for (int s = 0; s < apu.sample_count; s++) {
@@ -742,9 +862,6 @@ void runner_run(void) {
                 }
             }
 
-        } else if (ppu.scanline != 241) {
-
-            last_frame_scanline = ppu.scanline;
         }
     }
 }
@@ -776,6 +893,12 @@ void runner_quit(void) {
     }
 
     fm2_free();
+
+    if (g_frame_hash_file) { fclose(g_frame_hash_file); g_frame_hash_file = NULL; }
+    if (g_sync_file) {
+        /* Each frame is emitted inline at its VBL boundary — nothing pending. */
+        fclose(g_sync_file); g_sync_file = NULL;
+    }
 
     SDL_Quit();
 }
@@ -820,6 +943,18 @@ int main(int argc, char **argv) {
             g_scale = atoi(argv[++i]);
         else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
             g_screenshot_path = argv[++i];
+        else if (strcmp(argv[i], "--interp") == 0)
+            g_interp_mode = 1;
+        else if (strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
+            g_frame_hash_file = fopen(argv[++i], "w");
+            g_headless = 1;
+        }
+        else if (strcmp(argv[i], "--dump-sync") == 0 && i + 1 < argc) {
+            g_sync_file = fopen(argv[++i], "w");
+            g_headless = 1;
+        }
+        else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
+            g_frame_limit = (uint32_t)atoi(argv[++i]);
         else if (argv[i][0] != '-')
             rom_path = argv[i];
     }

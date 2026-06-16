@@ -79,16 +79,16 @@ class Op:
 #  rel  = relative   (branch)
 
 OPTABLE: Dict[int, Op] = {
-    # LDA
+    # LDA  (abx/aby/izy: +1 cycle on page cross)
     0xA9: Op("LDA","imm",2,2), 0xA5: Op("LDA","zp",2,3), 0xB5: Op("LDA","zpx",2,4),
-    0xAD: Op("LDA","abs",3,4), 0xBD: Op("LDA","abx",3,4), 0xB9: Op("LDA","aby",3,4),
-    0xA1: Op("LDA","izx",2,6), 0xB1: Op("LDA","izy",2,5),
-    # LDX
+    0xAD: Op("LDA","abs",3,4), 0xBD: Op("LDA","abx",3,4,True), 0xB9: Op("LDA","aby",3,4,True),
+    0xA1: Op("LDA","izx",2,6), 0xB1: Op("LDA","izy",2,5,True),
+    # LDX  (aby: +1 on page cross)
     0xA2: Op("LDX","imm",2,2), 0xA6: Op("LDX","zp",2,3), 0xB6: Op("LDX","zpy",2,4),
-    0xAE: Op("LDX","abs",3,4), 0xBE: Op("LDX","aby",3,4),
-    # LDY
+    0xAE: Op("LDX","abs",3,4), 0xBE: Op("LDX","aby",3,4,True),
+    # LDY  (abx: +1 on page cross)
     0xA0: Op("LDY","imm",2,2), 0xA4: Op("LDY","zp",2,3), 0xB4: Op("LDY","zpx",2,4),
-    0xAC: Op("LDY","abs",3,4), 0xBC: Op("LDY","abx",3,4),
+    0xAC: Op("LDY","abs",3,4), 0xBC: Op("LDY","abx",3,4,True),
     # STA
     0x85: Op("STA","zp",2,3), 0x95: Op("STA","zpx",2,4),
     0x8D: Op("STA","abs",3,4), 0x9D: Op("STA","abx",3,5), 0x99: Op("STA","aby",3,5),
@@ -104,13 +104,13 @@ OPTABLE: Dict[int, Op] = {
     # Stack
     0x48: Op("PHA","imp",1,3), 0x68: Op("PLA","imp",1,4),
     0x08: Op("PHP","imp",1,3), 0x28: Op("PLP","imp",1,4),
-    # Arithmetic
+    # Arithmetic  (abx/aby/izy: +1 on page cross)
     0x69: Op("ADC","imm",2,2), 0x65: Op("ADC","zp",2,3), 0x75: Op("ADC","zpx",2,4),
-    0x6D: Op("ADC","abs",3,4), 0x7D: Op("ADC","abx",3,4), 0x79: Op("ADC","aby",3,4),
-    0x61: Op("ADC","izx",2,6), 0x71: Op("ADC","izy",2,5),
+    0x6D: Op("ADC","abs",3,4), 0x7D: Op("ADC","abx",3,4,True), 0x79: Op("ADC","aby",3,4,True),
+    0x61: Op("ADC","izx",2,6), 0x71: Op("ADC","izy",2,5,True),
     0xE9: Op("SBC","imm",2,2), 0xE5: Op("SBC","zp",2,3), 0xF5: Op("SBC","zpx",2,4),
-    0xED: Op("SBC","abs",3,4), 0xFD: Op("SBC","abx",3,4), 0xF9: Op("SBC","aby",3,4),
-    0xE1: Op("SBC","izx",2,6), 0xF1: Op("SBC","izy",2,5),
+    0xED: Op("SBC","abs",3,4), 0xFD: Op("SBC","abx",3,4,True), 0xF9: Op("SBC","aby",3,4,True),
+    0xE1: Op("SBC","izx",2,6), 0xF1: Op("SBC","izy",2,5,True),
     # Increment/Decrement
     0xE8: Op("INX","imp",1,2), 0xC8: Op("INY","imp",1,2),
     0xCA: Op("DEX","imp",1,2), 0x88: Op("DEY","imp",1,2),
@@ -118,16 +118,16 @@ OPTABLE: Dict[int, Op] = {
     0xEE: Op("INC","abs",3,6), 0xFE: Op("INC","abx",3,7),
     0xC6: Op("DEC","zp",2,5), 0xD6: Op("DEC","zpx",2,6),
     0xCE: Op("DEC","abs",3,6), 0xDE: Op("DEC","abx",3,7),
-    # Logical
+    # Logical  (abx/aby/izy: +1 on page cross)
     0x29: Op("AND","imm",2,2), 0x25: Op("AND","zp",2,3), 0x35: Op("AND","zpx",2,4),
-    0x2D: Op("AND","abs",3,4), 0x3D: Op("AND","abx",3,4), 0x39: Op("AND","aby",3,4),
-    0x21: Op("AND","izx",2,6), 0x31: Op("AND","izy",2,5),
+    0x2D: Op("AND","abs",3,4), 0x3D: Op("AND","abx",3,4,True), 0x39: Op("AND","aby",3,4,True),
+    0x21: Op("AND","izx",2,6), 0x31: Op("AND","izy",2,5,True),
     0x09: Op("ORA","imm",2,2), 0x05: Op("ORA","zp",2,3), 0x15: Op("ORA","zpx",2,4),
-    0x0D: Op("ORA","abs",3,4), 0x1D: Op("ORA","abx",3,4), 0x19: Op("ORA","aby",3,4),
-    0x01: Op("ORA","izx",2,6), 0x11: Op("ORA","izy",2,5),
+    0x0D: Op("ORA","abs",3,4), 0x1D: Op("ORA","abx",3,4,True), 0x19: Op("ORA","aby",3,4,True),
+    0x01: Op("ORA","izx",2,6), 0x11: Op("ORA","izy",2,5,True),
     0x49: Op("EOR","imm",2,2), 0x45: Op("EOR","zp",2,3), 0x55: Op("EOR","zpx",2,4),
-    0x4D: Op("EOR","abs",3,4), 0x5D: Op("EOR","abx",3,4), 0x59: Op("EOR","aby",3,4),
-    0x41: Op("EOR","izx",2,6), 0x51: Op("EOR","izy",2,5),
+    0x4D: Op("EOR","abs",3,4), 0x5D: Op("EOR","abx",3,4,True), 0x59: Op("EOR","aby",3,4,True),
+    0x41: Op("EOR","izx",2,6), 0x51: Op("EOR","izy",2,5,True),
     # Shift/Rotate
     0x0A: Op("ASL","imp",1,2), 0x06: Op("ASL","zp",2,5), 0x16: Op("ASL","zpx",2,6),
     0x0E: Op("ASL","abs",3,6), 0x1E: Op("ASL","abx",3,7),
@@ -139,8 +139,8 @@ OPTABLE: Dict[int, Op] = {
     0x6E: Op("ROR","abs",3,6), 0x7E: Op("ROR","abx",3,7),
     # Compare
     0xC9: Op("CMP","imm",2,2), 0xC5: Op("CMP","zp",2,3), 0xD5: Op("CMP","zpx",2,4),
-    0xCD: Op("CMP","abs",3,4), 0xDD: Op("CMP","abx",3,4), 0xD9: Op("CMP","aby",3,4),
-    0xC1: Op("CMP","izx",2,6), 0xD1: Op("CMP","izy",2,5),
+    0xCD: Op("CMP","abs",3,4), 0xDD: Op("CMP","abx",3,4,True), 0xD9: Op("CMP","aby",3,4,True),
+    0xC1: Op("CMP","izx",2,6), 0xD1: Op("CMP","izy",2,5,True),
     0xE0: Op("CPX","imm",2,2), 0xE4: Op("CPX","zp",2,3), 0xEC: Op("CPX","abs",3,4),
     0xC0: Op("CPY","imm",2,2), 0xC4: Op("CPY","zp",2,3), 0xCC: Op("CPY","abs",3,4),
     # BIT
@@ -179,7 +179,7 @@ OPTABLE: Dict[int, Op] = {
     0xDC: Op("NOP","abx",3,4), 0xFC: Op("NOP","abx",3,4),
     # LAX, SAX (common undocumented)
     0xA7: Op("LAX","zp",2,3),  0xB7: Op("LAX","zpy",2,4),
-    0xAF: Op("LAX","abs",3,4), 0xBF: Op("LAX","aby",3,4),
+    0xAF: Op("LAX","abs",3,4), 0xBF: Op("LAX","aby",3,4,True),
     0xA3: Op("LAX","izx",2,6), 0xB3: Op("LAX","izy",2,5),
     0x87: Op("SAX","zp",2,3),  0x97: Op("SAX","zpy",2,4),
     0x8F: Op("SAX","abs",3,4), 0x83: Op("SAX","izx",2,6),
@@ -286,6 +286,37 @@ def emit_write(op: Op, operand: int, val: str) -> str:
 def branch_target(pc: int, operand: int) -> int:
     offset = operand if operand < 0x80 else operand - 0x100
     return (pc + 2 + offset) & 0xFFFF
+
+def is_sensitive_access(op: Op, operand: int) -> bool:
+    """Return True if this instruction accesses memory-mapped I/O that requires
+    PPU/APU to be flushed before the access (i.e., reads $2000-$3FFF, $4000-$401F,
+    or writes to $2000-$3FFF, $4000-$401F, $8000-$FFFF via abs/abx/aby modes)."""
+    m = op.mode
+    mn = op.mnemonic
+    is_write = mn in {"STA","STX","STY","SAX","AHX","SHX","SHY","TAS",
+                      "ASL","LSR","ROL","ROR","INC","DEC",
+                      "SLO","RLA","SRE","RRA","DCP","ISB"}
+    is_read  = not is_write  # reads and RMW all need tick before read
+
+    if m not in ("abs", "abx", "aby"):
+        return False
+
+    base = operand & 0xFFFF
+    # For indexed modes the effective addr may drift ±255; check the whole range.
+    if m in ("abx", "aby"):
+        lo, hi = base, (base + 0xFF) & 0xFFFF
+    else:
+        lo = hi = base
+
+    # PPU registers $2000-$3FFF and APU/IO $4000-$401F
+    if lo <= 0x3FFF and hi >= 0x2000:
+        return True
+    if lo <= 0x401F and hi >= 0x4000:
+        return True
+    # Mapper writes: any write to $8000-$FFFF
+    if is_write and lo >= 0x8000:
+        return True
+    return False
 
 # ---------------------------------------------------------------------------
 # 6502 instruction → C statement(s)
@@ -415,14 +446,21 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
     elif mn == "CLV": lines += ["cpu.V = 0;"]
     elif mn == "NOP": lines += ["/* NOP */"]
     elif mn == "BRK":
-        lines += ["cpu.PC += 2;",
-                   "stack_push((cpu.PC >> 8) & 0xFF);",
-                   "stack_push(cpu.PC & 0xFF);",
+        ret = pc + 2  # BRK return address = BRK_addr + 2 (hardcoded like JSR)
+        lines += [f"stack_push(0x{(ret >> 8) & 0xFF:02X});",
+                   f"stack_push(0x{ret & 0xFF:02X});",
                    "stack_push(get_P() | 0x30);",
                    "cpu.I = 1;",
                    "cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);",
                     "return;"]
-    elif mn == "STP": lines += ["/* STP — halt */", "return;"]
+    elif mn == "STP":
+        # STP (JAM/KIL) — on real hardware the CPU halts, but this game uses STP
+        # after a bank switch to signal "resume at this address in the new bank".
+        # Set cpu.PC to the STP's own address so the dispatch fetches whatever the
+        # *new* bank has at that address, rather than re-calling the function entry.
+        lines += [f"/* STP — halt; dispatch resumes at ${{pc:04X}} in new bank */",
+                  f"cpu.PC = 0x{pc:04X};",
+                  "return;"]
     elif mn == "JSR":
         tgt = operand & 0xFFFF
         # Push return_addr-1 = (pc+3)-1 = pc+2 (high byte first)
@@ -535,7 +573,11 @@ class Disassembler:
         self.prg_banks = prg_banks
         # For simple mappers: last 16KB always at $C000, first 16KB at $8000 (or same bank if 1 bank)
         self.functions: Dict[int, List[Tuple[int, Op, int]]] = {}  # pc -> [(pc,op,operand),...]
+        # Bank-aware: banked_functions[bank][addr] = [(pc,op,operand),...]
+        self.banked_functions: Dict[int, Dict[int, List[Tuple[int, Op, int]]]] = {}
         self.extra_funcs: Set[int] = set()
+        # Bank-qualified extra seeds from cfg: banked_extra_funcs[bank] = [addr, ...]
+        self.banked_extra_funcs: Dict[int, List[int]] = defaultdict(list)
         self.data_regions: Set[range] = set()
         self.inline_data_funcs: Set[int] = set()
         self.orphan_window: int = 3
@@ -616,6 +658,38 @@ class Disassembler:
         lo = self.prg_read(addr)
         hi = self.prg_read(addr + 1)
         return lo | (hi << 8)
+
+    def prg_read_banked(self, bank: int, addr: int) -> int:
+        """Read from a specific switchable bank at the given CPU address."""
+        if addr < 0x8000 or addr > 0xFFFF:
+            return 0xFF
+        if self.mapper == 2:  # UNROM: 16KB switchable at $8000, fixed last at $C000
+            if addr >= 0xC000:
+                offset = (self.prg_banks - 1) * 0x4000 + (addr - 0xC000)
+            else:
+                offset = bank * 0x4000 + (addr - 0x8000)
+            return self.prg[offset] if 0 <= offset < len(self.prg) else 0xFF
+        if self.mapper == 7:  # AxROM: 32KB switchable at $8000-$FFFF
+            offset = bank * 0x8000 + (addr - 0x8000)
+            return self.prg[offset] if 0 <= offset < len(self.prg) else 0xFF
+        return 0xFF
+
+    def _read_vector_banked(self, bank: int, addr: int) -> int:
+        lo = self.prg_read_banked(bank, addr)
+        hi = self.prg_read_banked(bank, addr + 1)
+        return lo | (hi << 8)
+
+    def decode_at_banked(self, bank: int, pc: int) -> Optional[Tuple[Op, int]]:
+        opcode = self.prg_read_banked(bank, pc)
+        op = OPTABLE.get(opcode)
+        if op is None:
+            return None
+        operand = 0
+        if op.size >= 2:
+            operand = self.prg_read_banked(bank, pc + 1)
+        if op.size >= 3:
+            operand |= self.prg_read_banked(bank, pc + 2) << 8
+        return op, operand
 
     def decode_at(self, pc: int) -> Optional[Tuple[Op, int]]:
         opcode = self.prg_read(pc)
@@ -710,6 +784,109 @@ class Disassembler:
 
         return new_found
 
+    def _bfs_bank(self, bank: int, seeds: List[int]) -> Dict[int, List[Tuple[int, Op, int]]]:
+        """BFS within a single switchable bank. Only follows addresses in switchable range."""
+        functions: Dict[int, List[Tuple[int, Op, int]]] = {}
+        visited: Set[int] = set()
+        queue: List[int] = list(seeds)
+
+        while queue:
+            entry = queue.pop(0)
+            if entry in visited:
+                continue
+            if not self.is_switchable(entry):
+                continue
+            if any(entry in r for r in self.data_regions):
+                continue
+            visited.add(entry)
+
+            insns: List[Tuple[int, Op, int]] = []
+            pc = entry
+            steps = 0
+            while steps < 512:
+                steps += 1
+                dec = self.decode_at_banked(bank, pc)
+                if dec is None:
+                    break
+                op, operand = dec
+                insns.append((pc, op, operand))
+
+                if op.mnemonic == "JSR":
+                    tgt = operand & 0xFFFF
+                    if self.is_switchable(tgt) and tgt not in visited:
+                        queue.append(tgt)
+                    if tgt not in self.inline_data_funcs:
+                        ret = pc + 3
+                        if self.is_switchable(ret) and ret not in visited:
+                            queue.append(ret)
+                elif op.mnemonic == "JMP" and op.mode == "abs":
+                    tgt = operand & 0xFFFF
+                    if self.is_switchable(tgt) and tgt not in visited:
+                        queue.append(tgt)
+                elif op.mnemonic in BRANCH_OPS:
+                    tgt = branch_target(pc, operand)
+                    if self.is_switchable(tgt) and tgt not in visited:
+                        queue.append(tgt)
+
+                if op.mnemonic in TERMINATORS:
+                    break
+                pc += op.size
+                if pc > 0xFFFF:
+                    break
+
+            if insns:
+                functions[entry] = insns
+
+        return functions
+
+    def discover_banked(self):
+        """Disassemble each switchable bank independently (UNROM/mapper 2, AxROM/mapper 7)."""
+        if self.mapper == 2:
+            # UNROM: fixed last 16KB bank at $C000-$FFFF; switchable 16KB banks at $8000-$BFFF.
+            # Collect cross-bank entry seeds from already-discovered fixed-bank code.
+            seeds: Set[int] = set()
+            for insns in self.functions.values():
+                for pc, op, operand in insns:
+                    tgt = operand & 0xFFFF
+                    if op.mnemonic in ("JSR",) and self.is_switchable(tgt):
+                        seeds.add(tgt)
+                    elif op.mnemonic == "JMP" and op.mode == "abs" and self.is_switchable(tgt):
+                        seeds.add(tgt)
+                    elif op.mnemonic in BRANCH_OPS:
+                        tgt2 = branch_target(pc, operand)
+                        if self.is_switchable(tgt2):
+                            seeds.add(tgt2)
+            for a in self.extra_funcs:
+                if self.is_switchable(a):
+                    seeds.add(a)
+            seed_list = sorted(seeds)
+            n_switchable = self.prg_banks - 1  # last 16KB bank is fixed
+            print(f"[nesrecomp] Bank-aware recomp (UNROM): {n_switchable} banks, {len(seed_list)} seeds")
+            for bank in range(n_switchable):
+                funcs = self._bfs_bank(bank, seed_list)
+                if funcs:
+                    self.banked_functions[bank] = funcs
+                    print(f"[nesrecomp]   Bank {bank}: {len(funcs)} functions")
+
+        elif self.mapper == 7:
+            # AxROM: entire $8000-$FFFF is one switchable 32KB bank (no fixed bank).
+            # Each bank has its own NMI/IRQ vectors — BFS each bank independently.
+            n_banks = self.prg_banks // 2  # header uses 16KB units; AxROM banks are 32KB
+            print(f"[nesrecomp] Bank-aware recomp (AxROM): {n_banks} banks, each seeded from its own vectors")
+            for bank in range(n_banks):
+                seeds_b: List[int] = [
+                    self._read_vector_banked(bank, 0xFFFC),  # RESET (meaningful for bank 0)
+                    self._read_vector_banked(bank, 0xFFFA),  # NMI
+                    self._read_vector_banked(bank, 0xFFFE),  # IRQ
+                ]
+                # cfg bank-qualified extra seeds for this bank
+                for a in self.banked_extra_funcs.get(bank, []):
+                    seeds_b.append(a)
+                funcs = self._bfs_bank(bank, sorted(set(seeds_b)))
+                if funcs:
+                    self.banked_functions[bank] = funcs
+                    print(f"[nesrecomp]   Bank {bank}: {len(funcs)} functions")
+
     def discover(self, seeds: List[int]):
         visited: Set[int] = set()
         # MMC3: filter out switchable-bank addresses from seeds
@@ -739,6 +916,9 @@ class Disassembler:
                 break
 
             self._bfs(list(set(orphans)), visited)
+
+        # Bank-aware discovery for switchable banks
+        self.discover_banked()
 
 # ---------------------------------------------------------------------------
 # C Code emitter
@@ -776,9 +956,14 @@ class CEmitter:
         lines.append('')
 
         # Forward declarations (non-static so dispatch.c can reference them)
-        lines.append('/* --- Forward declarations --- */')
+        lines.append('/* --- Forward declarations (fixed bank) --- */')
         for entry in sorted(self.dis.functions):
             lines.append(f'void func_{entry:04X}(void);')
+        if self.dis.banked_functions:
+            lines.append('/* --- Forward declarations (switchable banks) --- */')
+            for bank in sorted(self.dis.banked_functions):
+                for entry in sorted(self.dis.banked_functions[bank]):
+                    lines.append(f'void func_b{bank}_{entry:04X}(void);')
         lines.append('')
 
         # Function bodies
@@ -795,6 +980,8 @@ class CEmitter:
                 stmts = emit_instruction(op, operand, pc, set())
                 if stmts:
                     lines.append(comment)
+                    if is_sensitive_access(op, operand):
+                        lines.append('  tick_ppu_apu();')
                     lines.append(f'  g_cpu_cycles += {op.cycles};')
                     if op.page_cross:
                         if op.mode == 'abx':
@@ -808,6 +995,37 @@ class CEmitter:
             lines.append('}')
             lines.append('')
 
+        # Banked functions (switchable banks)
+        if self.dis.banked_functions:
+            lines.append('/* ---- Switchable bank functions ---- */')
+            lines.append('')
+            for bank in sorted(self.dis.banked_functions):
+                funcs = self.dis.banked_functions[bank]
+                for entry in sorted(funcs):
+                    insns = funcs[entry]
+                    lines.append(f'void func_b{bank}_{entry:04X}(void) {{')
+                    for idx, (pc, op, operand) in enumerate(insns):
+                        comment = f'  /* ${pc:04X}  {op.mnemonic} */'
+                        if idx == 0:
+                            lines.append(f'  cpu.PC = 0x{pc:04X};')
+                        stmts = emit_instruction(op, operand, pc, set())
+                        if stmts:
+                            lines.append(comment)
+                            if is_sensitive_access(op, operand):
+                                lines.append('  tick_ppu_apu();')
+                            lines.append(f'  g_cpu_cycles += {op.cycles};')
+                            if op.page_cross:
+                                if op.mode == 'abx':
+                                    lines.append(f'  if ((0x{operand & 0xFF:02X} + cpu.X) > 0xFF) g_cpu_cycles++;')
+                                elif op.mode == 'aby':
+                                    lines.append(f'  if ((0x{operand & 0xFF:02X} + cpu.Y) > 0xFF) g_cpu_cycles++;')
+                                elif op.mode == 'izy':
+                                    lines.append(f'  if ((mem_read(0x{operand:02X}) + cpu.Y) > 0xFF) g_cpu_cycles++;')
+                            for s in stmts:
+                                lines.append(f'  {s}')
+                    lines.append('}')
+                    lines.append('')
+
         with open(path, 'w') as f:
             f.write('\n'.join(lines))
 
@@ -817,19 +1035,42 @@ class CEmitter:
         nmi   = self.dis.read_vector(0xFFFA)
         irq   = self.dis.read_vector(0xFFFE)
 
+        # Build bank-aware address map: addr -> set of banks
+        banked_by_addr: Dict[int, Set[int]] = defaultdict(set)
+        for bank, funcs in self.dis.banked_functions.items():
+            for addr in funcs:
+                banked_by_addr[addr].add(bank)
+
         lines = []
         lines.append(f'/* Auto-generated dispatch table — {game} */')
         lines.append('#include "runner.h"')
         lines.append('#include <stdint.h>')
         lines.append('')
-        # Non-static forward decls — functions are defined in _full.c
+        # Forward decls — fixed bank
         for entry in sorted(known):
             lines.append(f'void func_{entry:04X}(void);')
+        # Forward decls — switchable banks
+        if banked_by_addr:
+            for addr in sorted(banked_by_addr):
+                for bank in sorted(banked_by_addr[addr]):
+                    lines.append(f'void func_b{bank}_{addr:04X}(void);')
         lines.append('')
         lines.append('void call_by_address(uint16_t addr) {')
         lines.append('  switch (addr) {')
-        for entry in sorted(known):
-            lines.append(f'    case 0x{entry:04X}: func_{entry:04X}(); return;')
+        # All addresses: fixed and banked
+        all_addrs = sorted(set(known) | set(banked_by_addr.keys()))
+        for addr in all_addrs:
+            if addr in banked_by_addr:
+                # Bank-aware dispatch
+                banks = sorted(banked_by_addr[addr])
+                lines.append(f'    case 0x{addr:04X}:')
+                lines.append(f'      switch (mapper_get_prg_bank(0)) {{')
+                for bank in banks:
+                    lines.append(f'        case {bank}: func_b{bank}_{addr:04X}(); return;')
+                lines.append(f'        default: runner_miss(addr); cpu_interp_step(); return;')
+                lines.append(f'      }}')
+            else:
+                lines.append(f'    case 0x{addr:04X}: func_{addr:04X}(); return;')
         lines.append('    default:')
         lines.append('      runner_miss(addr);')
         lines.append('      cpu_interp_step();')
@@ -840,10 +1081,11 @@ class CEmitter:
         # Entry points — guard against undiscovered vectors
         def body(addr):
             if addr in known:
-                return f'func_{addr:04X}();' 
-            return f'fprintf(stderr, "[nesrecomp] vector ${addr:04X} not found\\n");' 
-        # nes_reset/nmi/irq are defined in runner.c
-        # We only expose the generated entry points as callable symbols
+                return f'func_{addr:04X}();'
+            if addr in banked_by_addr:
+                # Vector is in a switchable bank — dispatch at runtime by active bank
+                return f'call_by_address(0x{addr:04X});'
+            return f'fprintf(stderr, "[nesrecomp] vector ${addr:04X} not found\\n");'
         lines.append(f'/* RESET=${reset:04X}  NMI=${nmi:04X}  IRQ=${irq:04X} */')
         lines.append(f'void nes_entry_reset(void) {{ {body(reset)} }}')
         lines.append(f'void nes_entry_nmi(void)   {{ {body(nmi)} }}')
@@ -856,7 +1098,7 @@ class CEmitter:
 # ---------------------------------------------------------------------------
 
 def parse_cfg(path: str) -> dict:
-    cfg = {"extra_func": [], "data_region": [], "inline_data_func": [], "jump_table": []}
+    cfg = {"extra_func": [], "banked_extra_func": [], "data_region": [], "inline_data_func": [], "jump_table": []}
     if not os.path.exists(path):
         return cfg
     with open(path) as f:
@@ -868,7 +1110,12 @@ def parse_cfg(path: str) -> dict:
                 k, v = line.split('=', 1)
                 k, v = k.strip(), v.strip()
                 if k == "extra_func":
-                    cfg["extra_func"].append(int(v, 16))
+                    # Support bank-qualified format: "N:XXXX" (bank N, address XXXX)
+                    if ':' in v:
+                        bank_s, addr_s = v.split(':', 1)
+                        cfg["banked_extra_func"].append((int(bank_s), int(addr_s, 16)))
+                    else:
+                        cfg["extra_func"].append(int(v, 16))
                 elif k == "data_region":
                     parts = v.split(',')
                     cfg["data_region"].append((int(parts[0],16), int(parts[1],16)))
@@ -919,6 +1166,8 @@ def main():
     dis.orphan_window = args.orphan_window
     for ea in cfg.get("extra_func", []):
         dis.extra_funcs.add(ea)
+    for bank, ea in cfg.get("banked_extra_func", []):
+        dis.banked_extra_funcs[bank].append(ea)
     for start, end in cfg.get("data_region", []):
         dis.data_regions.add(range(start, end + 1))
     for ea in cfg.get("inline_data_func", []):

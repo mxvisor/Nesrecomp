@@ -8,6 +8,8 @@
 
 Mapper mapper;
 
+/* Debug: frame counter for MMC3/CHR tracing (set by runner) */
+
 void mapper_init(int id, int prg_banks, int chr_banks, int mirroring) {
     memset(&mapper, 0, sizeof(mapper));
     mapper.id        = id;
@@ -210,7 +212,7 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
             if (!(addr & 1)) mapper.mirroring = (val & 1) ? 0 : 1;
         } else if (addr < 0xE000) {
             if (!(addr & 1)) mapper.m4_irq_latch = val;
-            else { mapper.m4_irq_counter = 0; mapper.m4_irq_reload = 1; }
+            else mapper.m4_irq_reload = 1;  /* $C001: reload at next scanline, do NOT zero counter now */
         } else {
             if (addr & 1) mapper.m4_irq_enable = 1;
             else { mapper.m4_irq_enable = 0; g_irq_pending = 0; } /* acknowledge */
@@ -225,9 +227,6 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
         {
             uint8_t bank = val & 0x07;
             uint8_t mir  = (val & 0x10) ? 4 : 3;
-            //if (bank != mapper.m1_prg_bank || mir != mapper.mirroring)
-            //    fprintf(stderr, "[axrom] bank %d->%d mir=%d->%d PC=$%04X scan=%d\n",
-            //            mapper.m1_prg_bank, bank, mapper.mirroring, mir, cpu.PC, ppu.scanline);
             mapper.m1_prg_bank = bank;
             mapper.mirroring   = mir;
         }
@@ -411,6 +410,12 @@ uint8_t mapper_chr_read(uint16_t addr) {
     }
 }
 
+uint8_t mapper_get_prg_bank(int slot) {
+    (void)slot;
+    /* UNROM (2), MMC1 (1), AxROM (7): m1_prg_bank is the active switchable bank */
+    return mapper.m1_prg_bank;
+}
+
 void mapper_chr_write(uint16_t addr, uint8_t val) {
     /* CHR-RAM */
     if (mapper.chr_banks == 0) {
@@ -438,17 +443,20 @@ void mapper_scanline(void) {
     }
 
     if (mapper.id != 4) return;
-    
+
     /* Called from ppu.c only when RENDER is active — no extra checks needed */
-    
-    if (mapper.m4_irq_counter == 0 || mapper.m4_irq_reload) {
+
+    int old_count = mapper.m4_irq_counter;
+    if (!old_count || mapper.m4_irq_reload) {
         mapper.m4_irq_counter = mapper.m4_irq_latch;
         mapper.m4_irq_reload = 0;
     } else {
         mapper.m4_irq_counter--;
     }
-    
-    if (mapper.m4_irq_counter == 0 && mapper.m4_irq_enable) {
+
+    /* Fire IRQ when counter transitions to 0 from a non-zero value (standard MMC3 rev A).
+     * Do NOT fire when reloading with old_count==0 (that would be rev B behavior). */
+    if (old_count && !mapper.m4_irq_counter && mapper.m4_irq_enable) {
         nes_irq();
     }
 }

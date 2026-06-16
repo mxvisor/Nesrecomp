@@ -13,6 +13,7 @@ uint32_t g_cpu_cycles = 0;
 uint8_t controller[2]  = {0, 0};
 uint8_t ctrl_shift[2]  = {0, 0};
 static uint8_t ctrl_strobe = 0;
+int g_lag_flag = 1;  /* 1 = no controller read this frame (lag); cleared by ctrl_read */
 
 /* =========================================================================
    Controller — NES standard shift-register protocol
@@ -37,6 +38,7 @@ void ctrl_write(uint8_t val) {
 }
 
 uint8_t ctrl_read(int port) {
+    g_lag_flag = 0;  /* game read controller → not a lag frame */
     if (ctrl_strobe) {
         /* Strobe high: always return A button (bit 7) */
         return (controller[port] >> 7) & 1;

@@ -35,6 +35,11 @@
 #include "mapper.h"
 #include "interrupts.h"
 
+/* ppudead: counts down from 2 to 0 at startup. While > 0, VBL/NMI are
+ * suppressed (CPU runs but game stays stuck in its wait-vbl loop, matching
+ * FCEUX ppudead behaviour). Set to 0 to disable. */
+extern int g_ppudead;
+
 /* Dispatch miss learning */
 void runner_miss(uint16_t addr);
 

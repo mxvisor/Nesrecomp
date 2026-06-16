@@ -46,6 +46,8 @@ The main loop in `runner.c` is **yield-based**, not a tight interpreter loop:
 
 Every recompiled function ends with `return` after each control-flow instruction (JMP, JSR, branch taken, RTS, RTI), yielding back to the main loop. This keeps PPU/APU in sync at instruction granularity.
 
+> **Planned change:** instruction-granularity yield negates most of the recompilation speedup (the yield cost replaces the interpreter's dispatch cost). The target architecture is **block-boundary yield** with catch-up, breaking blocks only at control flow and timing-sensitive accesses. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Do NOT start it before bugs 1.4/1.5 (exact cycle counts) are fixed — block cycle sums depend on them. Full design + checklist: `next-features.md`.
+
 ---
 
 ## Key Files
@@ -191,6 +193,7 @@ Repeat until no new misses. If an FM2 file exists for the game, always prefer it
 
 ```bash
 # Preferred: FM2 playback (terminates when done, covers all code paths in the recording)
+# NOTE: always use --headless for FM2 playback — it runs at maximum speed (no SDL throttle).
 ./bin/NesGame --headless --playback fm2/NesGame.fm2
 
 # Fallback: timed headless run (no FM2 available)
@@ -198,6 +201,16 @@ RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
 ```
 
 Learning mode is enabled automatically in headless mode. After the run, re-run `make GAME=NesGame` to rebuild with the new addresses.
+
+---
+
+## Temporary Directory
+
+`./tmp/` — all temporary working files go here (not in git).
+
+- **Screenshots**: `./tmp/screenshots/` — use for all screenshot comparisons
+- **Frame dumps**: `./tmp/` — hash dump files from `--dump-frames`
+- Tool: `tools/fceux_screenshot.sh GAME FRAME [OUT.png]` — capture FCEUX reference screenshot
 
 ---
 
@@ -322,6 +335,21 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 | Tab | Toggle widescreen |
 | ESC | Quit |
 
+## CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--headless` | Run without SDL window (for automated testing) |
+| `--interp` | Use pure CPU interpreter instead of recompiled code |
+| `--playback fm2/X.fm2` | Replay FM2 input file |
+| `--dump-frames out.txt` | Write per-frame CRC32 hashes of the **framebuffer** (cosmetic comparison with FCEUX). For demo-sync debugging prefer the lag+RAM metric — see "Synchronization Methodology" below. |
+| `--dump-sync out.txt` | Write per-frame `frame lag lagcount djb2(RAM $0000-$07FF)` — the **lag-sequence metric** (primary demo-sync signal). lag and RAM are captured together at the VBL boundary. Use via `tools/compare_lags.sh`. |
+| `--frames N` | Stop after N frames |
+| `--seconds N` | Run for N seconds (headless without playback) |
+| `--screenshot path.png` | Save screenshot on exit |
+
+`--interp` is useful for isolating recompiler bugs from PPU/mapper bugs: if a game diverges in recompiler mode but matches FCEUX in interpreter mode, the bug is in the recompiler (code generation). If both modes diverge equally, the bug is in PPU/mapper/timing emulation.
+
 ---
 
 ## Common Tasks for AI Agents
@@ -359,14 +387,138 @@ SIGTERM and SIGINT both trigger a clean exit so the save is not lost.
 PRG mode 3 (single switchable 32 KB bank) is not yet tested. Need a ROM that uses it.
 Candidate games: **Just Breed**, **Getsu Fuuma Den**, **Uncharted Waters** (all Japan, Koei).
 
-### AxROM (mapper 7)
-AxROM is listed in `mapper.c` / `mapper.h` but has never been tested against a real game.
+### AxROM (mapper 7) — Battletoads status
 
-**Implementation plan:**
-- Add mapper 7 case to `mapper_write()`: bits 0–3 select 32 KB PRG bank, bit 4 selects one-screen nametable (lower or upper)
-- Add nametable mirroring to `ppu.c` / `memory.c`: single-screen mode using `$2000` or `$2400` depending on mapper bit
-- Test with a known AxROM game (e.g. **Battletoads**, **Jeopardy!**, **Time Lord**)
-- Add to Tested Games table in README once verified
+AxROM is implemented and tested with **Battletoads**. FM2 plays through fully. Title screen was
+previously stuck; two root fixes were applied:
+
+**Fix 1 — STP dispatch (`tools/nesrecomp.py`):**
+When a bank-switch write happens mid-function (e.g. SLO izx in `func_b5_D2B5` writes to ROM),
+the real CPU continues execution at the same PC in the *new* bank's code. Our STP handler now
+emits `cpu.PC = 0x{addr:04X};` before return so the dispatch loop fetches that address in the
+new bank, rather than re-calling the original function entry.
+
+**Fix 2 — Illegal opcodes (`src/cpu_interp.c`):**
+ISB ($FF/$FB/$EF/$F7/$F3/$E7/$E3), SLO ($1F/$1B/$0F/$13/$17/$07/$03), and RRA ($7F/$7B/$6F/
+$73/$77/$67/$63) were missing from the interpreter. They were treated as 1-byte unknowns,
+causing stuck loops (especially ISB abs,X $FF $FF $FF — all-$FF open-bus regions).
+
+**Copy-protection relay (for reference):**
+Battletoads uses a multi-stage copy-protection relay: BRK → bank3 IRQ ($FF46) → 13× ISB abs,X
+at $FFFF+X (each increments the current bank's IRQ-vector hi byte, triggering a bank switch to
+bank0 or bank7) → bank5 ($D2B5) → bank4 ($D2CC) → bank1 ($D2D7) → RTI → BRK cascade in bank1
+→ bank0. The relay depends on cpu.X loaded from RAM via LAX izy($FF).
+
+**Remaining known issues (low priority — game runs):**
+- Some debug `fprintf(stderr,...)` traces left in `generated/Battletoads_full.c`; strip before
+  shipping (they are in the auto-generated file so will disappear on next `make discover`).
+- Sprite-0 Y position: OAM[0]Y=$F8 (off-screen) on title — split-screen effects may be off.
+
+### Dead frame / fm2 sync mismatch (TODO)
+
+FCEUX emits **2** gray-screen hashes at startup (ppudead=2). Our emulator emits **1** gray hash
+while consuming 2 fm2 inputs. This causes `first_mismatch=2` for **Contraf** (game renders
+a non-gray frame where FCEUX still shows the second ppudead gray frame).
+
+FCEUX ppudead loop (from `ppu.cpp`):
+```c
+if (ppudead) {
+    memset(XBuf, 0x80, 256 * 240);
+    X6502_Run(scanlines_per_frame * (256 + 85));
+    ppudead--;
+}
+```
+Input is applied before each frame including dead frames (`FCEU_UpdateInput()` → `FCEUPPU_Loop()`).
+
+**Fix needed:** emit 2 gray hashes (one per ppudead frame) while consuming 2 fm2 inputs and
+advancing the CPU for each. Affected games: **Contraf** (first_mismatch=2), possibly others.
+Skip until other accuracy issues are resolved to avoid masking more important divergences.
+
+---
+
+### Battlecity frame-hash accuracy (Mapper 0, NROM-128)
+
+Frame-hash comparison against FCEUX reference (`fm2/Battlecity.hashes`, 46898 frames):
+
+| Cluster | Frames | Count | Description |
+|---------|--------|-------|-------------|
+| A | 2450 | 1 | Level-transition explosion frame — right half of sprite missing. Cosmetic. |
+| B | 5171–5172, 7879–7883, 10541 | ~6 | Similar single/2-frame level-transition glitches. |
+| C | 11874–11947 | 74 | Larger block, likely same class of issue. |
+| **D** | **12604–46897** | **34293** | **Permanent divergence** — something breaks at frame ~12604 and never recovers. Root cause unknown; needs investigation. |
+
+Screenshots of first diverging frame (cluster A) are in `tmp/screenshots/`.
+
+**Root cause hypothesis for cluster A/B/C:** sprite clipping at level-transition boundary — PPU disables rendering 1 dot too early/late causing one scanline of a sprite to vanish. 1-frame granularity.
+
+**Root cause hypothesis for cluster D:** a game-state variable or timing accumulates drift across multiple levels until it permanently diverges at level ~8-9. Possible causes: RNG seed drift, timer off-by-one, or a specific mapper/PPU edge case triggered only at that point in the FM2.
+
+**Priority:** low for A/B/C (cosmetic, <10 frames total). Medium for D (breaks second half of TAS replay).
+
+---
+
+### Mermaid (UNROM/Mapper 2) — frame-hash accuracy
+
+Frame-hash comparison against FCEUX reference (fm2/Mermaid.hashes, 129000 frames):
+
+- Frames 1–1891: **match 100%** (after palette fix below)
+- Frames 1892–end: **~1.6% match** — persistent divergence
+
+**Root cause found:** At frame 1892, game sets RAM[$EE]=$FF to signal level completion and disable PPU rendering (NMI handler at $C000 checks $EE on entry: `LDA $EE; ORA $9A; BNE skip_reenable`). FCEUX sets $EE=$FF during the game loop of frame 1892; our emulator keeps $EE=$00.
+
+Both emulators have identical RAM at frame 1891 end (only 3 stale stack bytes differ: $01F9, $01FA, $01FE). The game-loop code that should set $EE=$FF before VBlank 1892 doesn't trigger in our emulator.
+
+**Hypothesis:** Some switchable-bank code (likely bank 5, address $B2D3–$B2DB: `INC $EE`) runs in FCEUX but not in our interpreter. This could be due to:
+- A specific code path in bank 4/5 that evaluates a counter/flag differently
+- A timing-sensitive loop that finishes before VBlank in FCEUX but not in ours (due to cycle-counting differences)
+
+**Investigation state:** RAM[$EE] and RAM[$9A] are both $00 at every NMI delivery in our emulator (frames 1889–1895). FCEUX has $EE=$FF at frame 1892 VBlank. The write trace in our emulator only shows: `$EE: 00→01` (INC at $C6EF, bank4) then `01→00` (reset at $C6E5, bank4) — no write to $FF.
+
+**Next steps to fix:**
+1. Add instruction-level trace in FCEUX (Mesen trace log) for bank 4–5 code around frame 1892
+2. Compare which INC/STA $EE instructions FCEUX executes vs ours
+3. Find what flag/counter controls whether the "level complete" code path runs
+
+**Palette implementation (runner.c):** FCEUX_PAL tables are 256-entry. `ppu.indexbuf[i]` stores
+`emphasis_range | (color & 0x3F)` where emphasis_range is:
+- `0x80`: no PPU emphasis bits (PPU[1] >> 5 == 0) → lookup uses unscaled P64 values
+- `0xC0`: all 3 emphasis bits set → 0.75-scaled values (FCEUX XBuf 0xC0 range)
+- `0x40`: partial emphasis → approximate 0.75-scaled values
+
+---
+
+### Frame-hash accuracy summary (all games)
+
+Run with `--interp` flag to use pure interpreter (no recompiled code). Comparison vs `fm2/GAME.hashes` (FCEUX reference).
+
+| Game | Mapper | Recompiler | Interpreter | First mismatch | Root cause |
+|------|--------|-----------|-------------|----------------|------------|
+| Mario | NROM-256 | **99.99%** | **99.99%** | frame 7817 (1), 12594 (1) | 2 isolated mismatches; same in both modes |
+| Battlecity | NROM-128 | 26.70% | **99.98%** | recomp: 2450 / interp: 2449 | **Recompiler bug** (cluster D at 12604+) |
+| Mermaid | UNROM | 1.61% | 1.61% | frame 1892 | PPU/mapper bug; interp identical → not recompiler |
+| Zelda | MMC1 | 0.20% | 0.20% | frame 32 | PPU/mapper bug; 7-frame phase advance vs FCEUX |
+| Adventure | CNROM | 4.06% | 3.59% | frame 8 | PPU/mapper bug; both diverge at first content frame |
+| Felix | MMC3 | 0.44% | 0.44% | frame 116 | PPU/mapper bug; PRG bank switch timing mid-frame |
+| Castle3 | MMC5 | 99.60% | **99.97%** | frame 998 | Slight recompiler issue; mostly PPU/mapper |
+| Battletoads | AxROM | 1.08% | **68.03%** | recomp: 172 / interp: 1537 | **Recompiler bug** (copy protection code path) |
+
+**Methodology:** `GAME=X bin/X --headless --interp --playback fm2/X.fm2 --dump-frames out.txt`
+Battlecity/Battletoads/Adventure: full-movie run. Others: 3000-frame sample.
+
+**Key insight:** Games where interpreter ≫ recompiler have **recompiler bugs** (wrong code generation).
+Games where both modes match have **PPU/mapper/timing bugs** (emulation-level issues).
+
+**Battlecity (NROM):** Interpreter fixes the permanent divergence at frame 12604+ → recompiler emits wrong code somewhere in the NROM-128 address space.
+
+**Battletoads (AxROM):** Interpreter 68% vs recompiler 1% → copy protection ISB/SLO sequences probably have recompiler code generation errors.
+
+**Zelda (MMC1):** Both modes diverge at frame 32 (7-frame phase advance vs FCEUX). PPU/CPU reset timing or MMC1 initial state.
+
+**Adventure (CNROM):** Both modes diverge at frame 8 (first rendered frame). CNROM CHR bank initialization or PPU issue.
+
+**Felix (MMC3):** Both modes diverge at frame 116. PRG bank switch pattern differs from FCEUX — animation advances 1 frame too early. Bug is in PPU timing or NMI handler interaction, not recompilation.
+
+---
 
 ### Bank-aware recompilation (switchable PRG banks)
 
@@ -406,3 +558,361 @@ Currently, only the **fixed PRG bank** ($E000–$FFFF or equivalent) is statical
 - MMC3 (Felix): six independently switchable 8 KB windows
 - AxROM (Battletoads): single 32 KB switchable slot $8000–$FFFF
 - MMC5 (Castle3): four 8 KB slots ($8000–$DFFF) + fixed $E000–$FFFF
+
+---
+
+## FCEUX 2.6.6 Lua API — Frame Capture & Exit (researched from source)
+
+Source: `/home/VisoR/projects/HOME/BATTLE_CITY_ADW/fceux-2.6.6/src/`
+
+### Speed rule
+
+**Always run FCEUX at maximum speed** when capturing sync/frame data. Add `emu.speedmode("nothrottle")` at the top of every Lua script. This is already in `tools/fceux_dump.lua`.
+
+### Speed modes (`emu.speedmode`)
+
+| Mode | Rendering | `gui.gdscreenshot()` | Lua hooks |
+|------|-----------|----------------------|-----------|
+| `"normal"` | every frame, throttled to 60fps | ✅ valid | every frame |
+| `"nothrottle"` | every frame, no throttle (~3200%) | ✅ valid | every frame |
+| `"turbo"` | frame-skip | ⚠️ may be stale | every frame |
+| `"maximum"` | **SKIPPED** (stub only) | ❌ stale buffer | every frame |
+
+**Rule:** Use `"nothrottle"` for fast capture. Never use `"maximum"` with `gui.gdscreenshot()`.
+
+### Exiting FCEUX from Lua
+
+- `os.exit(0)` — **works immediately**, os library is NOT sandboxed (`luaL_openlibs` loads everything). Best for clean process kill.
+- `emu.exit()` — sets `exitScheduled = TRUE`, processed at next frame boundary (not immediate). Prefer `os.exit(0)` when speed matters.
+- `--movielength N` CLI flag — calls `exit(0)` directly in `fceu.cpp` after N frames. Zero Lua overhead. Use this when you don't need per-frame hashes.
+
+### `gui.gdscreenshot()` — GD2 format
+
+Returns a Lua string of `11 + 256×240×4 = 245,771` bytes:
+- Bytes 0–10: GD2 header (`FF FE`, width(2BE), height(2BE), truecolor(1), bgcolor(4))
+- Bytes 11+: pixels as `[A][R][G][B]` per pixel, A=0 means opaque (7-bit alpha)
+
+**Fast CRC32 idiom** — hash entire pixel block in one Lua pass (NOT per-pixel sub()):
+```lua
+local pixels = gd:sub(12)   -- everything after header (Lua 1-indexed: byte 12 = first pixel A)
+local hash = crc32(pixels)  -- one pass over 245,771 bytes
+```
+
+Performance note: per-pixel `gd:sub(off, off+2)` in a loop = ~61K string allocs → GC pressure → ~100ms/frame. One `gd:sub(12)` + byte-loop CRC32 = ~5ms/frame.
+
+### Frame hash format compatibility with `--dump-frames`
+
+FCEUX GD2 pixel layout: `[A=0, R, G, B]` big-endian per pixel.
+Our framebuf layout: `0xFFRRGGBB` uint32_t (little-endian: bytes B, G, R, A in memory).
+
+**To get matching hashes**, runner.c must output pixels in the same byte order as GD2.
+Options:
+1. Hash `[0, R, G, B]` in both (add zero alpha byte before each pixel in runner.c)
+2. Hash only `[R, G, B]` in both (skip alpha in Lua with per-pixel indexing — slow)
+3. **Best:** use FCEUX palette in our emulator so colors match, then hash `[R, G, B]`
+
+**Correct approach for palette-invariant hashes:**
+1. Add `uint8_t indexbuf[SCREEN_W * SCREEN_H]` to ppu struct (filled alongside framebuf with `color & 0x3F`)
+2. In runner.c `--dump-frames`: convert indexbuf → [0, R, G, B] using FCEUX's palette table (static const in runner.c), hash that
+3. In Lua: `gd:sub(12)` already uses FCEUX palette → identical bytes for same NES index
+
+Do NOT change `PALETTE[]` in ppu.c — it is used for display rendering, not hash comparison.
+
+### Correct minimal Lua script template
+
+```lua
+local outfile = os.getenv("FRAME_HASH_OUT") or "/tmp/fceux_frames.txt"
+local limit   = tonumber(os.getenv("FRAME_LIMIT") or "0") or 0
+local f = assert(io.open(outfile, "w"))
+
+emu.speedmode("nothrottle")
+
+-- CRC32 (Lua 5.1, bit library)
+local bit = require("bit")
+local band, bxor, rshift = bit.band, bit.bxor, bit.rshift
+local crc_tab = {}
+for i = 0, 255 do
+    local c = i
+    for _ = 1, 8 do
+        c = band(c,1)==1 and bxor(rshift(c,1), 0xEDB88320) or rshift(c,1)
+    end
+    crc_tab[i] = c
+end
+local function crc32(s)
+    local crc = 0xFFFFFFFF
+    for i = 1, #s do
+        crc = bxor(rshift(crc,8), crc_tab[band(bxor(crc, s:byte(i)), 0xFF)])
+    end
+    return band(bxor(crc, 0xFFFFFFFF), 0xFFFFFFFF)
+end
+
+local frame, done = 0, false
+emu.registerafter(function()
+    if done then return end
+    frame = frame + 1
+    local gd = gui.gdscreenshot()
+    if gd and #gd > 11 then
+        f:write(string.format("%06d %08X\n", frame, crc32(gd:sub(12))))
+    else
+        f:write(string.format("%06d NOFRAME\n", frame))
+    end
+    if (limit > 0 and frame >= limit) or movie.mode() == "finished" then
+        done = true
+        f:close()
+        os.exit(0)   -- immediate, os not sandboxed
+    end
+end)
+```
+
+---
+
+## Synchronization Methodology — READ BEFORE DEBUGGING DEMO DESYNC
+
+This section supersedes ad-hoc frame-hash debugging. It encodes the
+diagnostic order derived from the reference research (companion docs:
+`ppu-and-fm2-playback.md`, `fceux-lua-dump.md`, `mesen-reference.md`,
+`next-features.md`). Agents debugging desync MUST follow this order
+instead of staring at framebuffer hashes.
+
+### The metric problem (why current frame-hash debugging stalls)
+
+The current `--dump-frames` hashes the **framebuffer** (PPU output).
+This is the *worst* metric for demo sync, because the framebuffer is the
+bottom of the dependency chain and absorbs every cosmetic PPU difference
+that does NOT affect whether the demo desyncs:
+
+```
+CPU logic (what the game DECIDED)      ← "does the demo stay in sync" lives here
+   ↓ RAM $0000-$07FF (positions, RNG)  ← direct consequence of logic
+   ↓ PPU regs / VRAM (what was LOADED)
+   ↓ Framebuffer (what was DRAWN)      ← we currently hash HERE (worst)
+```
+
+A sprite blinking one frame late, a palette emphasis shade, a 1-pixel
+mid-frame scroll — all diverge the framebuffer while the game runs
+perfectly. This is why most games in the accuracy table show "many PPU
+differences": we measure the layer most polluted by cosmetic noise.
+
+### Correct metrics, in priority order
+
+1. **Lag sequence** (primary). One bit per frame: did the game read
+   `$4016/$4017` this frame. Compute: `lag=true` at frame start;
+   `lag=false` on controller read **by the game** (not by debug/Lua
+   peeks); record bit at frame end. A lag bit divergence = the exact
+   frame where input shifted = the demo's death point. Because one FM2
+   record = one emulated frame, a single extra lag frame shifts all
+   subsequent input by one and kills the run. This is the ONLY point
+   worth debugging.
+2. **RAM hash `$0000-$07FF`** (secondary). Whether game logic matches
+   (positions, counters, RNG). Independent of how the PPU draws.
+3. **Framebuffer** (last). Only for cosmetic verification once logic is
+   provably in sync.
+
+### Mandatory diagnostic order
+
+1. Check the demo header `NewPPU` flag (see "Reference emulator
+   caveat" below). If `0`/absent and the game is timing-sensitive,
+   desync is EXPECTED on our cycle-accurate core — do not debug the
+   core against this demo.
+2. Compare **lag sequences** first. FCEUX side via `emu.lagged()`
+   (see `fceux-lua-dump.md` for the verified Lua dump script). First
+   lag divergence row = the frame to debug. Everything after it is
+   downstream noise.
+3. Only if lags match end-to-end: compare RAM hashes. A transient
+   (diverge-one-frame-then-rejoin) RAM mismatch with matching lags is
+   a hash-sample-phase artifact, NOT a desync — ignore it.
+4. Framebuffer last.
+
+### Tooling — implemented
+
+Run the whole comparison with one command:
+
+```bash
+make GAME=Battlecity                 # build first
+tools/compare_lags.sh Battlecity     # whole movie (auto-caps to FM2 length)
+tools/compare_lags.sh Battlecity 300 # first 300 frames (fast iteration)
+```
+
+It dumps both sides into `lags/GAME.ours.txt` and `lags/GAME.fceux.txt`
+(format `frame lag lagcount djb2(RAM $0000-$07FF)`), then compares
+**frame-to-frame** (no offset fitting — fitting an offset hides real
+transient divergences) and prints: lag match %, divergent-frame count,
+cumulative lag drift, and the first lag divergence with surrounding
+context. Exit 0 = lags match end-to-end.
+
+- [x] `--dump-sync out.txt`: emits `frame lag lagcount djb2(RAM
+  $0000-$07FF)`. lag and RAM are captured **together** at the VBL
+  boundary so they share one timing phase (an earlier version captured
+  them at different boundaries, which no constant offset could align).
+- [x] Lag flag plumbing: `g_lag_flag` in `memory.c` cleared ONLY by
+  game-side `ctrl_read()` (`$4016/$4017`); reset each frame in the FM2
+  advance. Debug peeks do not touch it.
+- [x] FCEUX-side: `tools/fceux_dump.lua` (`emu.lagged()`,
+  `memory.readbyterange(0,0x800)`, djb2, `emu.speedmode("nothrottle")`,
+  `os.exit(0)` to stop at movie end). `compare_lags.sh` bakes the OUT
+  path and frame cap into a temp copy per run.
+
+### Interpreting the result (cumulative lag drift is the verdict)
+
+The lag sequence rarely matches 100% frame-to-frame even when a demo
+plays perfectly, because borderline `wait-for-vblank` frames flip lag
+one frame early/late then immediately re-sync (an NMI-moment phase
+jitter). The **authoritative** "does the demo stay in sync" signal is
+the **cumulative lag total**: if `ours ≈ fceux` (drift 0 or ±1), FM2
+input stays aligned end-to-end and the demo plays correctly; only the
+jittery frames differ. A *growing* drift = real desync — debug the
+first frame where the running totals start to separate.
+
+### Lag-sequence results — all games (interpreter, full movie)
+
+Generated with `tools/compare_lags.sh GAME`. "drift" = cumulative lag
+total (ours − fceux); near-zero = FM2 input stays aligned = demo plays
+in sync. "f2f" = frame-to-frame lag match (jitter sensitive — low f2f
+with near-zero drift just means many transient single-frame flips).
+
+| Game | Mapper | f2f match | divergent | **drift** | 1st div | verdict |
+|------|--------|-----------|-----------|-----------|---------|---------|
+| Mario | NROM-256 | 99.832% | 41 | **+3** | 5 | in sync |
+| Battlecity | NROM-128 | 99.840% | 75 | **−1** | 11 | in sync |
+| Adventure¹ | CNROM | 99.860% | 28 | **−4** | 4 | in sync |
+| Felix | MMC3 | 99.666% | 271 | **−1** | 22 | in sync |
+| Battletoads | AxROM | 55.937% | 67152 | **−16** | 4 | in sync² |
+| Castle3 | MMC5 | 99.899% | 131 | **−109** | 4 | slow drift |
+| Mermaid | UNROM | 99.222% | 1003 | **−139** | 7 | slow drift |
+| Zelda | MMC1 | 78.524% | 17263 | **−16771** | 5 | **DESYNC** |
+
+¹ Adventure measured over first 20000 frames (movie is 240k).
+² Battletoads: 55% f2f but drift −16 over 45238 lag frames (0.035%) —
+heavy per-frame lag jitter that nets out aligned; demo stays in sync.
+
+**Key takeaway:** the framebuffer accuracy table (further below) badly
+under-reported sync. By the lag metric, 5/8 games play in sync to the
+end (Mario, Battlecity, Adventure, Felix, Battletoads) — their old
+"0.4–4% accuracy" was pure cosmetic framebuffer noise. Two have a slow
+lag drift (Castle3 −109, Mermaid −139) worth chasing. **Only Zelda
+(MMC1) truly desyncs** (drift −16771: FCEUX counts ~22% lag frames, we
+count ~1.5% — the game follows a different path from frame 5). Zelda is
+the priority real bug; the in-sync games' first divergences (frame 5–22)
+are borderline NMI-moment / cycle-count jitters (bugs 1.4/1.5).
+
+### Known limitation — RAM hash phase (TODO: post-NMI snapshot)
+
+`--dump-sync` snapshots RAM at the VBL boundary, which is BEFORE the
+current frame's NMI handler runs; FCEUX's `registerafter` snapshots
+AFTER it. Most games rewrite page-0 RAM in the NMI handler, so the two
+snapshots differ by one NMI handler's worth of writes EVERY frame — a
+sub-frame phase difference that no integer frame offset can cancel
+(Battlecity RAM matches only ~17% at its best offset despite lags being
+in sync). Therefore **RAM% is currently informational only**; lag is
+the trusted metric. To make RAM directly comparable, capture the sync
+snapshot when the NMI handler returns (watch for `cpu.SP` returning to
+its pre-NMI value), not at the VBL boundary. Until then do not treat a
+low RAM% as logic drift when the cumulative lag drift is ~0.
+
+### Reference emulator caveat (resolves many "PPU bugs")
+
+The accuracy table's "PPU/mapper bug; interp identical" rows may not be
+our bugs at all — they may be **FCEUX old-PPU inaccuracies** we are
+chasing:
+
+- FCEUX default PPU is **scanline-based, not cycle-accurate**. Its NMI
+  moment, sprite-0 dot, and A12 edges differ from hardware. A demo
+  recorded on it is correct *relative to old PPU*, and our
+  cycle-accurate core is allowed to diverge — that is not our bug.
+- FCEUX **new PPU** (`NewPPU 1` in the FM2 header) is dot-level but has
+  empirical constants (notably NMI fires ~20 dots into scanline 241,
+  tuned to make Marble Madness work, vs hardware cycle 1). Details in
+  `ppu-and-fm2-playback.md` §3.
+- **Mesen 2** is the cycle-accuracy reference. For timing disputes,
+  arbitrate against Mesen or a blargg/nesdev test ROM — NOT against
+  FCEUX. If our core matches Mesen but not FCEUX, we are right and the
+  FM2 is old-PPU-incompatible at the timing layer.
+- Action: when a "PPU bug" is suspected, FIRST check `NewPPU` flag,
+  THEN cross-check the disputed frame in Mesen before touching `ppu.c`.
+
+### Re-interpreting the accuracy table with this methodology
+
+The table classifies by `recomp vs interp` (which isolates recompiler
+bugs). Now add the lag/RAM axis to isolate the rest:
+
+- **Battlecity cluster D, Battletoads** — recomp ≪ interp → recompiler
+  code-gen bugs. Confirmed correct classification; debug
+  `tools/nesrecomp.py` emission. (Battletoads largely fixed per AxROM
+  notes; cluster D still open.)
+- **Mermaid, Zelda, Adventure, Felix** — recomp == interp → NOT
+  recompiler. Re-test these with the lag-sequence metric: many may be
+  cosmetic framebuffer divergence with intact lag sequences (i.e. the
+  demo actually stays in sync and only the picture differs). Mermaid's
+  `$EE` finding (frame 1892) is a real logic divergence — that one will
+  show as a RAM-hash divergence with a preceding lag divergence; trace
+  the first lag divergence, expect NMI-moment or cycle-count (page-cross
+  / branch, bugs 1.4/1.5) as root cause.
+
+### Most likely root cause of lag divergence (debug here first)
+
+When lag sequences diverge, the game did a different amount of work per
+frame. Ranked causes:
+
+1. **NMI moment.** If VBlank/NMI is set on a different dot than the
+   reference, the game's `wait-for-vblank` loop exits after a different
+   instruction count → different per-frame budget → borderline frames
+   lag differently. Causes #1. Consider a configurable `nmi_delay_dots`
+   compat knob (hardware/Mesen = cycle 1; FCEUX-compat = tune to match
+   lag sequence on a known demo).
+2. **CPU cycle accuracy.** Unaccounted page-cross and taken-branch
+   cycles (bugs 1.4/1.5 in `nesrecomp-bugs.md`) accumulate per-frame
+   budget error. Cheapest to fix — do FIRST.
+3. **DMC cycle stealing** if DPCM active (see `next-features.md` §6.2).
+
+### Format strategy (FM2 vs MSM) — discovery vs verification
+
+- **Discovery (collect addresses for recompilation): use FM2.** Reason:
+  full playthroughs exist only in FM2/bk2 (TASVideos). Desync tolerance
+  is high — even a desynced tail still executes real game code and
+  yields valid addresses (a dynamic miss is almost never false: if the
+  CPU jumped there, it is code). Tag discovery-log addresses with a
+  sync marker (lag-match up to frame N) so post-desync addresses are
+  known to be off-route but still valid as code.
+- **Verification (prove core correctness): use Mesen.** Record short
+  MSM in Mesen (cycle-accurate, hermetic settings) OR feed the same
+  input table to both via Lua `setInput` in the `inputPolled` callback
+  (scanline 241 — verified point). MSM playback is GUI-only; parse the
+  MSM yourself (ZIP + Input.txt, button order `UDLRSsBA` — differs from
+  FM2 `RLDUTSBA`). Details: `mesen-reference.md`.
+- **Do NOT** rely on converting FM2→full playthrough on Mesen: timing
+  layer (old PPU) makes long runs desync. Conversion is fine as an
+  *input source* for short differential core checks, not as a way to
+  replay a whole demo.
+
+### Controller compatibility profile (FM2 playback)
+
+For bit-exact FM2 replay, the controller must mimic **FCEUX, not
+hardware** (verified in FCEUX source, see `fceux-fm2-playback.md` §4):
+read while strobe high SHIFTS the register (hardware reloads); open bus
+is `DB & 0xC0`; DPCM controller glitch is NOT emulated by FCEUX. Keep a
+`controller_profile` switch: FCEUX-FM2 profile for replay, Hardware
+profile (reload on strobe, console-model open-bus mask, glitch on) for
+Mesen/hardware verification. Mixing profiles causes subtle desync on
+games with non-standard polling.
+
+---
+
+## Companion Reference Documents
+
+Detailed research backing the methodology above (kept outside the repo
+as working material; cite section numbers in commits/issues):
+
+| Doc | Contents |
+|-----|----------|
+| `nesrecomp-bugs.md` | Recompiler/emitter bugs + fix checklist. Bugs 1.4/1.5 (page-cross/branch cycles) are prerequisites for timing accuracy. |
+| `next-features.md` | Block-boundary yield (perf), DMA/timing anomalies (OAMDMA, DMC steal, A12 filter, controller glitch), observable-equivalence invariant. |
+| `nesrecomp-verification.md` | Success criteria L0–L4, comparison methods (frame-hash, trace, sync-point trace B'), coverage strategy, seed trust levels. |
+| `fceux-fm2-playback.md` | FM2 semantics from FCEUX source: record=frame model, controller quirks, power-on, lag frames. |
+| `mesen-reference.md` | Mesen 2.1.1 power-on (ppuOffset=1), hardware-accurate controller, MSM format, FCEUX↔Mesen 16-point comparison. |
+| `fceux-lua-dump.md` | VERIFIED FCEUX Lua API for lag+RAM dumping (not framebuffer): ready script, djb2 hash, comparison protocol with interpretation table. |
+| `ppu-and-fm2-playback.md` | Summary: Mesen vs FCEUX new/old PPU, demo replay by layers (semantics→power-on→controller→PPU timing), §6.0 the metric problem. |
+
+**Priority entry point for current desync work:** `ppu-and-fm2-playback.md`
+§6.0 (switch metric to lags+RAM) → `fceux-lua-dump.md` (dump lag log) →
+find first lag divergence → almost certainly NMI moment or cycle counts
+→ `nesrecomp-bugs.md` bugs 1.4/1.5.

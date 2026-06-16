@@ -19,8 +19,11 @@ typedef struct {
     uint32_t cycle;
     int      scanline;
     uint8_t  frame_ready;
+    uint8_t  frame_odd;    /* toggles each frame for odd-frame dot skip */
+    uint8_t  in_vblank;    /* VBL period active; survives $2002 read which clears regs[2] bit7 */
     uint8_t  nmi_suppressed;
     uint32_t framebuf[SCREEN_W * SCREEN_H];
+    uint8_t  indexbuf[SCREEN_W * SCREEN_H]; /* raw NES palette index (0-63) per pixel */
     uint16_t t_addr;
     uint16_t v_addr;
     uint8_t  fine_x_latch;
