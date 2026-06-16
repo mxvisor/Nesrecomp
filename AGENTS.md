@@ -809,6 +809,63 @@ snapshot when the NMI handler returns (watch for `cpu.SP` returning to
 its pre-NMI value), not at the VBL boundary. Until then do not treat a
 low RAM% as logic drift when the cumulative lag drift is ~0.
 
+### TODO — model PPU power-up warm-up ("ppudead")
+
+On real hardware the PPU is not ready immediately after reset:
+1. **Register-write ignore window (~29658 CPU cycles, ~1 frame):** writes
+   to `$2000/$2001/$2005/$2006` are dropped while the PPU warms up.
+2. **VBL flag unreliable** until the first real VBlank — bit7 of `$2002`
+   is indeterminate; the startup convention is to wait for TWO VBlanks.
+
+FCEUX models this coarsely as `ppudead=2` (2 frames where the CPU runs
+but VBL/NMI is suppressed); Mesen models the write-ignore window more
+precisely. **We currently do NOT model it** — `g_ppudead` only forces a
+gray framebuffer hash; NMI fires from frame 1, so our game starts ~2
+frames before FCEUX (Battlecity RAM changes at our frame 2 vs FCEUX
+frame 4). This is the source of the constant startup offset compare_lags
+has to absorb.
+
+**Scope when picked up:**
+- Suppress VBL flag + NMI for the warm-up frames (gate the scanline-241
+  block in `ppu.c` on `g_ppudead`, decrement once/frame in `runner.c`
+  AFTER the dump logic reads it — earlier ordering bug made frame 2 not
+  gray → 36% framebuffer).
+- Ideally also drop `$2000/$2001/$2005/$2006` writes during the window.
+- **Regression-test all 8 games with `tools/compare_lags.sh`** before
+  keeping — a measured experiment (VBL/NMI suppression only) showed it is
+  **neutral on the lag metric** for Battlecity (still 99.840%, 75
+  divergent; only shifts the offset −1→+1) and does NOT perfectly align
+  startup (we end up 1 frame late instead of 2 early). So the payoff is
+  *correctness + cleaner frame-to-frame alignment*, not better lag match.
+- **It IS the Zelda fix.** After the hermetic-SRAM fix (below) Zelda's
+  startup offset dropped from +8 to +1 frame; lags stay in sync until
+  frame 40, where the FM2 Start press (record 40) lands one game-frame
+  off because of that residual +1 — exactly FCEUX's extra ppudead
+  startup frame. Closing the +1 (try `ppudead=1`) should realign input
+  and fix the Zelda desync.
+
+### TODO — odd-frame dot skip (NTSC)
+
+`ppu.c` never skips the idle dot at (scanline 261, dot 340) on odd
+frames when rendering is enabled. Real NTSC alternates 89342 / 89341
+dots/frame (29780.5 CPU cyc avg); we always run 89342 (29780.67), so
+every frame is ~0.17 cyc too long → the game gets marginally more CPU
+time and lags slightly less than hardware. Small effect on its own (not
+the Zelda root cause) but a real cycle-accuracy bug. Fix in the dot
+advance block: track `ppu.frame_odd` (toggle at the 261→0 wrap) and when
+`scanline==261 && cycle==339 && frame_odd && RENDER`, jump straight to
+(0,0). Regression-test with `tools/compare_lags.sh`.
+
+### Hermetic SRAM during playback/dump (implemented)
+
+Battery-backed games (e.g. Zelda) were loading `bin/sav/GAME_battery.sav`
+(a save from a previous run) over the cleared power-on SRAM, booting the
+game into a different state than the FCEUX movie (recorded from power-on)
+→ instant desync. Fix: `g_hermetic` flag (set when `--playback` /
+`--dump-sync` / `--dump-frames`) skips `sram_load()`/`sram_save()` so the
+run starts from clean power-on SRAM and never persists it. Normal play
+still loads/saves the battery. This cut Zelda's startup offset +8→+1.
+
 ### Reference emulator caveat (resolves many "PPU bugs")
 
 The accuracy table's "PPU/mapper bug; interp identical" rows may not be

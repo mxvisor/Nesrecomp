@@ -41,6 +41,12 @@ static uint32_t g_lag_count        = 0;   /* cumulative lag-frame counter */
 /* Frame counter for debug traces */
 int g_current_frame = 0;
 
+/* Hermetic mode: FM2 playback / lag-frame dumps must start from a clean
+ * power-on SRAM (matching how the FCEUX movie was recorded) and must NOT
+ * persist SRAM — otherwise a battery save from a previous run boots the game
+ * into a different state and the demo desyncs (e.g. Zelda). Set in main(). */
+static int g_hermetic = 0;
+
 /* Total CPU cycles since power-on */
 uint64_t g_total_cpu_cycles = 0;
 
@@ -513,7 +519,7 @@ int runner_init(const char *title, const char *rom_path) {
     for (int _ri = 0; _ri < (int)sizeof(ram); _ri++)
         ram[_ri] = (_ri & 4) ? 0xFF : 0x00;
     memset(sram, 0, sizeof(sram));
-    sram_load();
+    if (!g_hermetic) sram_load();   /* skip battery load during playback/dump */
     memset(&ppu, 0, sizeof(ppu));
     memset(&apu, 0, sizeof(apu));
 
@@ -872,7 +878,7 @@ void runner_run(void) {
 void runner_quit(void) {
 
     if (g_screenshot_path) save_screenshot(g_screenshot_path);
-    sram_save();
+    if (!g_hermetic) sram_save();   /* don't persist battery during playback/dump */
     runner_miss_write_all();
     free(miss_map);
     free(miss_path);
@@ -958,6 +964,10 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-')
             rom_path = argv[i];
     }
+
+    /* Hermetic: playback or lag/frame dumps must start from a clean power-on
+     * SRAM and not persist it (match the FCEUX movie's recording conditions). */
+    g_hermetic = (playback_path != NULL) || g_sync_file || g_frame_hash_file;
 
     if (playback_path) {
         if (!fm2_open(playback_path))
