@@ -784,8 +784,21 @@ After the **hermetic-SRAM** + **ppudead warm-up** fixes:
 | Battletoads | AxROM | 69.25% | **+19378** | DESYNC³ |
 
 ¹ Adventure measured over first 20000 frames (movie is 240k).
-² Castle3/Mermaid: small steady lag drift (~100/frame-thousand) — own
-  bug, not startup; lower priority. Likely cycle-count / NMI-moment.
+² Castle3/Mermaid: NOT steady drift — localized bursts. Castle3 is in
+  sync until a single ~28-frame run at frame 52006 where FCEUX goes
+  lag=1 (game stops polling — a transition/pause or slowdown) and we
+  don't; the rest is near-zero. Mermaid is in sync until ~frame 90000,
+  then drifts. **Ruled out DMC cycle stealing** (DMC not active at the
+  Castle3 burst). Both demos are NewPPU 0 (old PPU); per the reference
+  caveat these localized timing bursts may be FCEUX old-PPU behaviour our
+  cycle-accurate core legitimately doesn't reproduce — needs a Mesen
+  cross-check to arbitrate before treating as our bug. Low priority
+  (games are 99.2–99.9% in sync).
+
+  Note: **DMC DMA cycle stealing is NOT modelled** (apu.c fetches no real
+  sample bytes and steals no CPU cycles). That is a genuine accuracy gap
+  that would make DMC-heavy games lag less than hardware — just not the
+  cause of *this* Castle3 burst. Worth doing for general accuracy.
 ³ Battletoads: new FM2; desyncs at frame 4, drift grows. Confirmed
   **independent of ppudead** (ppudead 0 vs 2 identical) — a separate
   copy-protection / AxROM issue (the known-hard recompiler case). Next
@@ -800,9 +813,10 @@ After the **hermetic-SRAM** + **ppudead warm-up** fixes:
   (suppress VBL/NMI for 2 frames at reset so FM2 input aligns with
   FCEUX). Together they took Zelda from a hard desync (−16771) to in
   sync (+1).
-- Remaining real desyncs: **Battletoads** (copy protection) and the
-  **Castle3/Mermaid** slow drift. The in-sync games' residual jitter
-  (drift ±1–3) is borderline NMI-moment / cycle-count noise (bugs
+- Remaining real desync: **Battletoads** (copy protection). Castle3/
+  Mermaid are in sync apart from localized old-PPU timing bursts (see ²)
+  — not chased without a Mesen arbiter. The in-sync games' residual
+  jitter (drift ±1–3) is borderline NMI-moment / cycle-count noise (bugs
   1.4/1.5, plus the unimplemented NTSC odd-frame dot skip).
 
 ### Known limitation — RAM hash phase (TODO: post-NMI snapshot)
