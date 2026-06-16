@@ -770,7 +770,8 @@ total (ours − fceux); near-zero = FM2 input stays aligned = demo plays
 in sync. "f2f" = frame-to-frame lag match (jitter sensitive — low f2f
 with near-zero drift just means many transient single-frame flips).
 
-After the **hermetic-SRAM** + **ppudead warm-up** fixes:
+After the **hermetic-SRAM** + **ppudead warm-up** + **odd-frame dot-skip**
+fixes:
 
 | Game | Mapper | f2f match | **drift** | verdict |
 |------|--------|-----------|-----------|---------|
@@ -779,30 +780,23 @@ After the **hermetic-SRAM** + **ppudead warm-up** fixes:
 | Adventure¹ | CNROM | 99.86% | **−3** | in sync |
 | Felix | MMC3 | 99.67% | **+1** | in sync |
 | Castle3 | MMC5 | 99.90% | **−107** | slow drift² |
-| Mermaid | UNROM | 99.22% | **−137** | slow drift² |
+| Mermaid | UNROM | 99.11% | **−26** | in sync (was −137) |
 | Zelda | MMC1 | **98.96%** | **+1** | in sync (was −16771!) |
-| Battletoads | AxROM | 69.25% | **+19378** | DESYNC³ |
+| Battletoads | AxROM | 11.22% | **+69200** | DESYNC³ |
 
 ¹ Adventure measured over first 20000 frames (movie is 240k).
-² Castle3/Mermaid: NOT steady drift — localized bursts. Castle3 is in
-  sync until a single ~28-frame run at frame 52006 where FCEUX goes
-  lag=1 (game stops polling — a transition/pause or slowdown) and we
-  don't; the rest is near-zero. Mermaid is in sync until ~frame 90000,
-  then drifts. **Ruled out DMC cycle stealing** (DMC not active at the
-  Castle3 burst). Both demos are NewPPU 0 (old PPU); per the reference
-  caveat these localized timing bursts may be FCEUX old-PPU behaviour our
-  cycle-accurate core legitimately doesn't reproduce — needs a Mesen
-  cross-check to arbitrate before treating as our bug. Low priority
-  (games are 99.2–99.9% in sync).
-
-  Note: **DMC DMA cycle stealing is NOT modelled** (apu.c fetches no real
-  sample bytes and steals no CPU cycles). That is a genuine accuracy gap
-  that would make DMC-heavy games lag less than hardware — just not the
-  cause of *this* Castle3 burst. Worth doing for general accuracy.
-³ Battletoads: new FM2; desyncs at frame 4, drift grows. Confirmed
-  **independent of ppudead** (ppudead 0 vs 2 identical) — a separate
-  copy-protection / AxROM issue (the known-hard recompiler case). Next
-  real target after Castle3/Mermaid.
+² Castle3: a single ~28-frame burst at frame 52006 where FCEUX goes
+  lag=1 (transition/pause or slowdown) and we don't; rest near-zero. NOT
+  DMC (verified). NewPPU 0 (old PPU) — may be FCEUX old-PPU behaviour our
+  cycle-accurate core legitimately doesn't reproduce; needs a Mesen
+  cross-check before treating as our bug. Low priority (99.90% in sync).
+  Mermaid's old −137 drift was largely the missing odd-frame dot skip;
+  now −26 (in sync).
+³ Battletoads: new FM2; desyncs at frame 4 (copy protection), so its lag
+  count is noise (two different desynced trajectories). Independent of
+  ppudead (0 vs 2 identical) and of DMC steal (on/off identical); the
+  odd-frame dot-skip reshuffled the number 69%→11% but the game was never
+  in sync. A separate copy-protection / AxROM problem — the real target.
 
 **Key takeaways:**
 - The framebuffer accuracy table (further below) badly under-reported
@@ -857,17 +851,31 @@ work (Zelda stays desynced); the full 2-frame suppression is required.
 $2006` writes during the ~29658-cycle warm-up window (Mesen-style). Not
 needed for current lag accuracy.
 
-### TODO — odd-frame dot skip (NTSC)
+### Odd-frame dot skip (NTSC) — implemented
 
-`ppu.c` never skips the idle dot at (scanline 261, dot 340) on odd
-frames when rendering is enabled. Real NTSC alternates 89342 / 89341
-dots/frame (29780.5 CPU cyc avg); we always run 89342 (29780.67), so
-every frame is ~0.17 cyc too long → the game gets marginally more CPU
-time and lags slightly less than hardware. Small effect on its own (not
-the Zelda root cause) but a real cycle-accuracy bug. Fix in the dot
-advance block: track `ppu.frame_odd` (toggle at the 261→0 wrap) and when
-`scanline==261 && cycle==339 && frame_odd && RENDER`, jump straight to
-(0,0). Regression-test with `tools/compare_lags.sh`.
+`ppu.c` now skips the idle dot at (scanline 261, dot 340) on odd frames
+when rendering is enabled, so frames alternate 89342/89341 dots
+(29780.5 CPU cyc avg) instead of always 89342. Implemented in the dot
+advance block via `ppu.frame_odd` (toggled at the 261→0 wrap).
+
+**Result:** improved **Mermaid** (lag drift −137 → **−26**); neutral on
+the 6 in-sync games. Battletoads' lag number swung (69%→11%) but it is
+already desynced at frame 4 (copy protection) so its lag count is noise
+— two different desynced trajectories, not a real regression. The skip
+is hardware-correct and FCEUX old-PPU also models it, hence the Mermaid
+gain toward the reference.
+
+### DMC DMA cycle stealing — investigated, deferred
+
+Attempted modelling the ~4-cycle CPU stall per DMC sample-byte fetch
+(accumulate in apu_step, drain PPU/APU without CPU in runner_run).
+**Measured exactly neutral on the whole corpus** — toggling it on/off
+gave identical lag for every game, because none of these demos actually
+drive the DMC channel (Castle3's 52006 burst has no DMC activity either).
+Reverted to keep the tree lean and avoid a shared-header (`apu.h`)
+rebuild trigger. Re-add when a DMC-heavy game enters the corpus; the
+approach (g_dmc_stall accumulate + drain) is known-good, just untestable
+here.
 
 ### Hermetic SRAM during playback/dump (implemented)
 
@@ -878,6 +886,27 @@ game into a different state than the FCEUX movie (recorded from power-on)
 `--dump-sync` / `--dump-frames`) skips `sram_load()`/`sram_save()` so the
 run starts from clean power-on SRAM and never persists it. Normal play
 still loads/saves the battery. This cut Zelda's startup offset +8→+1.
+
+### Interpreter-only build (`make GAME=X INTERP=1`)
+
+For demo-sync work everything runs under `--interp`, so the recompiled
+code is **never executed** (`runner.c`: `if (g_interp_mode) cpu_interp_step()
+else call_by_address()`). `INTERP=1` links the tiny `src/stub_full.c`
+(`call_by_address → cpu_interp_run`) instead of the generated
+`_full.c`/`_dispatch.c`, and skips the `discover` step entirely (no cfg /
+extra_func / bank-aware needed).
+
+**Why it matters:** bank-aware games generate enormous `_full.c` files
+(Mermaid UNROM ≈ 24500 functions); compiling that with `-O2` exhausts
+RAM. `INTERP=1` drops Mermaid's build peak from OOM to ~53 MB and is
+byte-identical at runtime under `--interp` (verified: Battlecity/Mermaid
+lag results unchanged). **Use `INTERP=1` for all `compare_lags.sh`
+testing.** Editing a shared header (e.g. `apu.h`) under a normal build
+forces recompiling the giant `_full.c` — another reason to use INTERP.
+
+TODO (separate): the giant generated `_full.c` is a recompiler
+scalability problem (compile time/RAM). Options: compile generated files
+at `-O1`, or split into multiple translation units.
 
 ### Reference emulator caveat (resolves many "PPU bugs")
 

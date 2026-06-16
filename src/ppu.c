@@ -440,10 +440,21 @@ void ppu_step(void) {
 
     /* ---- Advance dot / scanline ---- */
     ppu.cycle++;
-    if (ppu.cycle > 340) {
+    /* NTSC odd-frame dot skip: on odd frames with rendering enabled, the idle
+     * dot at (261,340) is skipped — jump straight to (0,0). This makes frames
+     * alternate 89342/89341 dots (29780.5 CPU cyc avg) instead of always
+     * 89342, matching hardware so the per-frame CPU budget is exact. */
+    if (ppu.scanline == 261 && ppu.cycle == 340 && ppu.frame_odd && RENDER) {
+        ppu.cycle = 0;
+        ppu.scanline = 0;
+        ppu.frame_odd ^= 1;
+    } else if (ppu.cycle > 340) {
         ppu.cycle = 0;
         ppu.scanline++;
-        if (ppu.scanline > 261) ppu.scanline = 0;
+        if (ppu.scanline > 261) {
+            ppu.scanline = 0;
+            ppu.frame_odd ^= 1;
+        }
     }
 }
 

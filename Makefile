@@ -78,7 +78,14 @@ RUNNER_SRCS = \
 FULL_SRC     = generated/$(GAME)_full.c
 DISPATCH_SRC = generated/$(GAME)_dispatch.c
 
-ifeq ($(wildcard $(DISPATCH_SRC)),)
+# INTERP=1: interpreter-only build for demo-sync testing — link the tiny
+# src/stub_full.c (call_by_address -> cpu_interp_run) instead of the generated
+# recompiled code, and skip the discover step. The recompiled code is never
+# executed under --interp anyway, and for bank-aware games (e.g. Mermaid:
+# ~24500 functions) compiling the giant generated/_full.c with -O2 exhausts RAM.
+ifeq ($(INTERP),1)
+    GAME_SRCS = src/stub_full.c
+else ifeq ($(wildcard $(DISPATCH_SRC)),)
     GAME_SRCS = $(FULL_SRC)
 else
     GAME_SRCS = $(FULL_SRC) $(DISPATCH_SRC)
@@ -217,9 +224,11 @@ ifndef GAME
 	$(error GAME not set. Usage: make GAME=NesGame)
 endif
 	$(MAKE) gen_embed ROM=$(ROM) GAME=$(GAME)
+ifneq ($(INTERP),1)
 	$(MAKE) parse_asm GAME=$(GAME) ASM=$(ASM) ROM=$(ROM)
 	$(MAKE) discover  GAME=$(GAME) ASM=$(ASM) ROM=$(ROM) ORPHAN=$(ORPHAN)
-	$(MAKE) compile   GAME=$(GAME)
+endif
+	$(MAKE) compile   GAME=$(GAME) INTERP=$(INTERP)
 
 # Clean
 clean:
