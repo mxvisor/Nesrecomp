@@ -3,6 +3,7 @@
 #include <math.h>
 
 APU apu;
+uint32_t g_dmc_stall = 0;    /* DMC DMA cycles owed to CPU (drained in runner) */
 
 /* =========================================================================
    Tables
@@ -415,6 +416,8 @@ void apu_step(void) {
             if (apu.dmc.bits_remaining > 0) apu.dmc.bits_remaining--;
             if (apu.dmc.bits_remaining == 0) {
                 apu.dmc.bits_remaining = 8;
+                /* DMC sample-byte DMA fetch stalls the CPU ~4 cycles. */
+                if (apu.dmc.bytes_remaining > 0) { extern uint32_t g_dmc_stall; g_dmc_stall += 4; }
                 if (apu.dmc.bytes_remaining > 0) apu.dmc.bytes_remaining--;
                 if (apu.dmc.bytes_remaining == 0) {
                     if (apu.dmc.loop) {

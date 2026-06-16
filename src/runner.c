@@ -751,6 +751,19 @@ void runner_run(void) {
 
         g_cpu_cycles = 0;
 
+        /* Drain DMC DMA stalls: the CPU was halted for those cycles while the
+         * PPU/APU kept running. Advancing them here (no CPU executed) shrinks
+         * the CPU's effective per-frame budget like hardware, so DMC-heavy
+         * games (e.g. Castlevania III) lag a bit more, matching FCEUX. Byte
+         * fetches are >400 cyc apart so this short drain never re-arms. */
+        { extern uint32_t g_dmc_stall;
+          if (g_dmc_stall) {
+            uint32_t s = g_dmc_stall; g_dmc_stall = 0;
+            for (uint32_t c = 0; c < s; c++)     apu_step();
+            for (uint32_t c = 0; c < s * 3; c++) ppu_step();
+          }
+        }
+
         if (ppu.frame_ready) {
             ppu.frame_ready = 0;
 

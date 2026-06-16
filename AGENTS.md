@@ -779,19 +779,22 @@ fixes:
 | Battlecity | NROM-128 | 99.84% | **+1** | in sync |
 | Adventure¹ | CNROM | 99.86% | **−3** | in sync |
 | Felix | MMC3 | 99.67% | **+1** | in sync |
-| Castle3 | MMC5 | 99.90% | **−107** | slow drift² |
+| Castle3 | MMC5 | 99.73% | **−793** | in sync² (full 367k playthrough) |
 | Mermaid | UNROM | 99.11% | **−26** | in sync (was −137) |
 | Zelda | MMC1 | **98.96%** | **+1** | in sync (was −16771!) |
 | Battletoads | AxROM | 11.22% | **+69200** | DESYNC³ |
 
 ¹ Adventure measured over first 20000 frames (movie is 240k).
-² Castle3: a single ~28-frame burst at frame 52006 where FCEUX goes
-  lag=1 (transition/pause or slowdown) and we don't; rest near-zero. NOT
-  DMC (verified). NewPPU 0 (old PPU) — may be FCEUX old-PPU behaviour our
-  cycle-accurate core legitimately doesn't reproduce; needs a Mesen
-  cross-check before treating as our bug. Low priority (99.90% in sync).
-  Mermaid's old −137 drift was largely the missing odd-frame dot skip;
-  now −26 (in sync).
+² Castle3: now a **full 367k-frame US playthrough** (the old 130k demo
+  and a Japanese Akumajo Densetsu/VRC6 demo were both wrong — see "FM2
+  compatibility" below). 99.73% f2f, drift −793 over 367k = 0.2%, so in
+  sync. The drift is bursty — concentrated in two heavy-slowdown sections
+  (frames ~80–120k and ~320–360k) where FCEUX lags and we don't. This
+  demo drives DMC hard (1.35M byte fetches); DMC steal trims it −825→−793
+  but the bulk is non-DMC sprite/scene slowdown (deeper sprite-eval / OAM
+  timing). NewPPU 0 — needs a Mesen cross-check before treating the
+  residual as our bug. Mermaid's old −137 was largely the missing
+  odd-frame dot skip; now −26.
 ³ Battletoads: new FM2; desyncs at frame 4 (copy protection), so its lag
   count is noise (two different desynced trajectories). Independent of
   ppudead (0 vs 2 identical) and of DMC steal (on/off identical); the
@@ -865,17 +868,38 @@ already desynced at frame 4 (copy protection) so its lag count is noise
 is hardware-correct and FCEUX old-PPU also models it, hence the Mermaid
 gain toward the reference.
 
-### DMC DMA cycle stealing — investigated, deferred
+### DMC DMA cycle stealing — implemented
 
-Attempted modelling the ~4-cycle CPU stall per DMC sample-byte fetch
-(accumulate in apu_step, drain PPU/APU without CPU in runner_run).
-**Measured exactly neutral on the whole corpus** — toggling it on/off
-gave identical lag for every game, because none of these demos actually
-drive the DMC channel (Castle3's 52006 burst has no DMC activity either).
-Reverted to keep the tree lean and avoid a shared-header (`apu.h`)
-rebuild trigger. Re-add when a DMC-heavy game enters the corpus; the
-approach (g_dmc_stall accumulate + drain) is known-good, just untestable
-here.
+Models the ~4-cycle CPU stall per DMC sample-byte fetch: `apu_step()`
+accumulates the stolen cycles in `g_dmc_stall` (file-scope in apu.c,
+referenced via inline `extern` in runner.c so it does NOT touch a shared
+header / trigger giant generated-file rebuilds), and `runner_run()`
+drains them by advancing PPU/APU without running CPU.
+
+First validated on the **full 367k Castle3 playthrough** which drives DMC
+hard (1.35M byte fetches): drift −825 → **−793**. Marginal because DMC
+steal is inherently small (~15 cyc/frame even at that fetch rate), so it
+can't explain Castle3's heavy-scene slowdown — but it is hardware-correct
+and **neutral on non-DMC games** (`g_dmc_stall` stays 0; verified
+on/off-identical on Battletoads/Mermaid). Kept for correctness.
+
+### FM2 compatibility — verify ROM before trusting a demo
+
+An FM2 only plays correctly on the exact ROM it was recorded against.
+The header's `romChecksum base64:...` is the **MD5 of the ROM minus the
+16-byte iNES header**. Check it before any comparison:
+
+```bash
+grep '^romChecksum' fm2/GAME.fm2 | sed 's/.*base64://' | base64 -d | xxd -p
+tail -c +17 rom/GAME.nes | md5sum            # must match
+```
+
+Two wrong Castle3 demos were hit this way: one for *Akumajo Densetsu (J)*
+(VRC6 / mapper 24 — different game, unsupported mapper), and the old US
+demo. The current `fm2/Castle3.fm2` (US Castlevania III, 367k frames)
+matches `rom/Castle3.nes` (`bfc4d979…def4f`). Also confirm the demo
+actually plays in FCEUX itself — a mismatch there means the FM2/ROM pair
+is wrong, not our emulator.
 
 ### Hermetic SRAM during playback/dump (implemented)
 
