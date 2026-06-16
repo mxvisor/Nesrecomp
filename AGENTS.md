@@ -389,8 +389,36 @@ Candidate games: **Just Breed**, **Getsu Fuuma Den**, **Uncharted Waters** (all 
 
 ### AxROM (mapper 7) — Battletoads status
 
-AxROM is implemented and tested with **Battletoads**. FM2 plays through fully. Title screen was
-previously stuck; two root fixes were applied:
+**Lag-sync root-cause analysis (current).** The new FM2 (US Battletoads,
+MD5-verified, plays correctly in FCEUX) desyncs early under `--interp`.
+Investigation with a bank-switch write trace (ours vs an FCEUX
+`memory.registerwrite` Lua trace over the first frames) found:
+
+- **The copy-protection relay is bit-identical to FCEUX** — same
+  bank-switch write addresses ($FFB3/$FFB9/$FFC9/$FFB4) and same values,
+  in the same order. (Apparent PC+3 difference is just where `cpu.PC`
+  points within the 3-byte STA when sampled — not a divergence.)
+- **The desync is a 1-frame shift**: our boot performs ONE EXTRA loop
+  iteration (an extra `$FFB3=$00` write at frame 1) that FCEUX does not,
+  so every subsequent relay write lands one frame late (FCEUX clusters at
+  frames 0/3/5 → ours at 0/1/4/6). The timing-sensitive copy protection
+  amplifies that +1 into full desync.
+- **Ruled out:** illegal-opcode cycle counts (ISB/SLO/RRA verified
+  correct); soft-reset completeness (adding S-=3/I/APU-clear changes
+  nothing); reset *timing* (the FM2 resets on frame 1 via `|2|`, but Zelda
+  has the identical frame-1 reset and stays in sync — and forcing the
+  reset before frame 1 was a no-op, since power-on already enters at the
+  reset vector). A blanket FM2 pre-load fixes Battletoads (→69%) but
+  breaks Zelda (→77%), so it is not the right fix.
+- **Open lead:** the extra boot iteration is a wait-loop in the reset code
+  that spins one frame longer than FCEUX before proceeding — most likely a
+  PPU warm-up / VBL-flag ($2002 bit7) polling timing specific to how
+  Battletoads' boot waits. Next step: trace what the boot loop polls at
+  frames 0–1 and why our loop iterates once more (compare $2002 reads /
+  the loop's exit condition against FCEUX).
+
+**Earlier title-screen fixes (historical):** the title was previously
+stuck; two root fixes were applied:
 
 **Fix 1 — STP dispatch (`tools/nesrecomp.py`):**
 When a bank-switch write happens mid-function (e.g. SLO izx in `func_b5_D2B5` writes to ROM),
@@ -795,11 +823,9 @@ fixes:
   timing). NewPPU 0 — needs a Mesen cross-check before treating the
   residual as our bug. Mermaid's old −137 was largely the missing
   odd-frame dot skip; now −26.
-³ Battletoads: new FM2; desyncs at frame 4 (copy protection), so its lag
-  count is noise (two different desynced trajectories). Independent of
-  ppudead (0 vs 2 identical) and of DMC steal (on/off identical); the
-  odd-frame dot-skip reshuffled the number 69%→11% but the game was never
-  in sync. A separate copy-protection / AxROM problem — the real target.
+³ Battletoads: new FM2 (MD5-verified for our ROM, plays fine in FCEUX).
+  Desyncs early; lag count is noise (different trajectories). See the
+  detailed root-cause analysis under "AxROM (mapper 7) — Battletoads" below.
 
 **Key takeaways:**
 - The framebuffer accuracy table (further below) badly under-reported
