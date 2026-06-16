@@ -410,12 +410,25 @@ Investigation with a bank-switch write trace (ours vs an FCEUX
   reset before frame 1 was a no-op, since power-on already enters at the
   reset vector). A blanket FM2 pre-load fixes Battletoads (→69%) but
   breaks Zelda (→77%), so it is not the right fix.
-- **Open lead:** the extra boot iteration is a wait-loop in the reset code
-  that spins one frame longer than FCEUX before proceeding — most likely a
-  PPU warm-up / VBL-flag ($2002 bit7) polling timing specific to how
-  Battletoads' boot waits. Next step: trace what the boot loop polls at
-  frames 0–1 and why our loop iterates once more (compare $2002 reads /
-  the loop's exit condition against FCEUX).
+- **Boot disassembled.** Reset vector $FFF2 = `LDA #0; STA $FFB3` (select
+  bank 0) `; JMP $82A9`. At $82A9: SEI/CLD/TXS, clear $2000/$2001, then the
+  classic **two-VBL wait** — `$82BA: LDA $2002; BPL $82BA` twice. So every
+  boot (power-on AND the FM2 frame-1 reset) spins on $2002 bit7 for two
+  VBLs. Our `$2002` trace confirms the loop at $82BA; FCEUX's at $82BD
+  (same instruction, PC sampled mid-op).
+- **Why it's hard:** the desync is the interaction of three startup
+  mechanisms — ppudead VBL suppression, the FM2 frame-1 reset (which jumps
+  back to $FFF2 and restarts the two-VBL wait), and the wait itself. The
+  FM2 reset interrupts/restarts the power-on VBL wait, and matching FCEUX
+  requires replicating its exact ppudead↔reset↔frame-counter accounting
+  (FCEUX's Lua frame counter doesn't even count ppudead frames, which made
+  raw frame-number comparison misleading). ppudead is also load-bearing
+  for Zelda, so it can't be changed casually.
+- **Next step (proper fix):** unify the startup/reset/FM2-input timing
+  model to apply FM2 record N at the START of frame N exactly like FCEUX
+  (instead of the current VBL-end tick), then re-tune/verify ppudead under
+  that model — a deliberate rework with a full 8-game lag regression. The
+  relay itself needs no changes.
 
 **Earlier title-screen fixes (historical):** the title was previously
 stuck; two root fixes were applied:
