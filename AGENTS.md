@@ -181,6 +181,11 @@ Two strategies, selected per mapper:
 
 ## Learning Mode (Incremental Discovery)
 
+> **Full guide: [`docs/address-collection.md`](address-collection.md)** — what
+> demos are for (collecting addresses to the game's ending), the dispatch-mode
+> requirement (collection does NOT work under `--interp` / `INTERP=1`), the
+> iterative loop, cfg directives, and why demo sync drives coverage.
+
 ```bash
 # Run headless and log missed addresses
 RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
@@ -1067,6 +1072,7 @@ as working material; cite section numbers in commits/issues):
 
 | Doc | Contents |
 |-----|----------|
+| [`address-collection.md`](address-collection.md) | **(in-repo)** How demos drive dynamic address discovery: dispatch-mode requirement, iterative learning loop, cfg directives, coverage strategy. |
 | `nesrecomp-bugs.md` | Recompiler/emitter bugs + fix checklist. Bugs 1.4/1.5 (page-cross/branch cycles) are prerequisites for timing accuracy. |
 | `next-features.md` | Block-boundary yield (perf), DMA/timing anomalies (OAMDMA, DMC steal, A12 filter, controller glitch), observable-equivalence invariant. |
 | `nesrecomp-verification.md` | Success criteria L0–L4, comparison methods (frame-hash, trace, sync-point trace B'), coverage strategy, seed trust levels. |
