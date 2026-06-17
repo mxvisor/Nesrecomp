@@ -389,46 +389,33 @@ Candidate games: **Just Breed**, **Getsu Fuuma Den**, **Uncharted Waters** (all 
 
 ### AxROM (mapper 7) — Battletoads status
 
-**Lag-sync root-cause analysis (current).** The new FM2 (US Battletoads,
-MD5-verified, plays correctly in FCEUX) desyncs early under `--interp`.
-Investigation with a bank-switch write trace (ours vs an FCEUX
-`memory.registerwrite` Lua trace over the first frames) found:
+**Startup + copy protection: FIXED** by the unified FM2 timing (see
+"Unified FM2 timing + ppudead=1" below). The new FM2 (US Battletoads,
+MD5-verified, plays in FCEUX) used to desync at frame 4; now it stays in
+lag-sync (drift +1) through the whole copy-protection relay and level-1
+start — **~5592 frames**.
 
-- **The copy-protection relay is bit-identical to FCEUX** — same
-  bank-switch write addresses ($FFB3/$FFB9/$FFC9/$FFB4) and same values,
-  in the same order. (Apparent PC+3 difference is just where `cpu.PC`
-  points within the 3-byte STA when sampled — not a divergence.)
-- **The desync is a 1-frame shift**: our boot performs ONE EXTRA loop
-  iteration (an extra `$FFB3=$00` write at frame 1) that FCEUX does not,
-  so every subsequent relay write lands one frame late (FCEUX clusters at
-  frames 0/3/5 → ours at 0/1/4/6). The timing-sensitive copy protection
-  amplifies that +1 into full desync.
-- **Ruled out:** illegal-opcode cycle counts (ISB/SLO/RRA verified
-  correct); soft-reset completeness (adding S-=3/I/APU-clear changes
-  nothing); reset *timing* (the FM2 resets on frame 1 via `|2|`, but Zelda
-  has the identical frame-1 reset and stays in sync — and forcing the
-  reset before frame 1 was a no-op, since power-on already enters at the
-  reset vector). A blanket FM2 pre-load fixes Battletoads (→69%) but
-  breaks Zelda (→77%), so it is not the right fix.
-- **Boot disassembled.** Reset vector $FFF2 = `LDA #0; STA $FFB3` (select
-  bank 0) `; JMP $82A9`. At $82A9: SEI/CLD/TXS, clear $2000/$2001, then the
-  classic **two-VBL wait** — `$82BA: LDA $2002; BPL $82BA` twice. So every
-  boot (power-on AND the FM2 frame-1 reset) spins on $2002 bit7 for two
-  VBLs. Our `$2002` trace confirms the loop at $82BA; FCEUX's at $82BD
-  (same instruction, PC sampled mid-op).
-- **Why it's hard:** the desync is the interaction of three startup
-  mechanisms — ppudead VBL suppression, the FM2 frame-1 reset (which jumps
-  back to $FFF2 and restarts the two-VBL wait), and the wait itself. The
-  FM2 reset interrupts/restarts the power-on VBL wait, and matching FCEUX
-  requires replicating its exact ppudead↔reset↔frame-counter accounting
-  (FCEUX's Lua frame counter doesn't even count ppudead frames, which made
-  raw frame-number comparison misleading). ppudead is also load-bearing
-  for Zelda, so it can't be changed casually.
-- **Next step (proper fix):** unify the startup/reset/FM2-input timing
-  model to apply FM2 record N at the START of frame N exactly like FCEUX
-  (instead of the current VBL-end tick), then re-tune/verify ppudead under
-  that model — a deliberate rework with a full 8-game lag regression. The
-  relay itself needs no changes.
+How it was found: a bank-switch write trace (ours vs an FCEUX
+`memory.registerwrite` Lua trace) showed the copy-protection relay is
+**bit-identical** to FCEUX (same $FFB3/$FFB9/$FFC9/$FFB4 writes/values/
+order); the only difference was a one-frame shift from the FM2 frame-1
+reset being applied a frame late. Disassembly: reset $FFF2 = `LDA #0;
+STA $FFB3; JMP $82A9`, then a two-VBL wait (`$82BA: LDA $2002; BPL`).
+The unified record-N-at-frame-start model removed the extra boot
+iteration and the relay now lines up. (Ruled out along the way:
+illegal-op cycles, soft-reset completeness, blanket pre-load — which
+broke Zelda.)
+
+**Remaining: gameplay desync at ~frame 5592.** At 5592 the game leaves
+its main loop ($872A wait) for a heavy multi-bank routine (banks 0/1/2/6
+— a level transition / data load) that lags for ~9 frames. FCEUX's run
+of that routine is 9 lag frames; **ours is 10** (one extra), so we exit
+one frame late and the drift becomes +1, then more such heavy routines
+each add ~+1. This is the **same class** as Castle3/Mermaid: a 1-frame
+slip in a heavy routine on a NewPPU-0 demo — a cycle/timing accuracy gap
+(sprite-0 / OAM-DMA / sprite-eval), best arbitrated against Mesen, not a
+unique Battletoads bug. RAM can't pinpoint it (phase-unreliable: 3/4800
+matches) without the post-NMI RAM-snapshot TODO.
 
 **Earlier title-screen fixes (historical):** the title was previously
 stuck; two root fixes were applied:
