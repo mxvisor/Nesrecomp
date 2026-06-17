@@ -28,12 +28,13 @@ static int g_interp_mode = 0;
 static FILE    *g_frame_hash_file  = NULL;
 static uint32_t g_frame_hash_count = 0;
 static uint32_t g_frame_limit      = 0;   /* stop after N frames (0 = unlimited) */
-/* PPU power-up warm-up (FCEUX ppudead=2): for the first 2 frames after reset
- * the PPU sets no VBL flag and fires no NMI (ppu.c gates the scanline-241 block
- * on this), so the game spins in its reset wait-loop — matching hardware/FCEUX.
- * Decremented once per frame in runner_run AFTER the dump logic reads it.
- * Critical for FM2 startup alignment (fixed Zelda: 78.5%→98.96% lag match). */
-int             g_ppudead          = 2;
+/* PPU power-up warm-up: for the first frame(s) after reset the PPU sets no VBL
+ * flag and fires no NMI (ppu.c gates the scanline-241 block on this), so the
+ * game spins in its reset wait-loop. Decremented once per frame in runner_run
+ * AFTER the dump logic reads it. Value 1 is correct under the unified FM2
+ * timing model (record N applied at the start of frame N, see runner_run):
+ * it yields exact lag sync (Mario/Battlecity/Felix/Zelda 100%, drift 0). */
+int             g_ppudead          = 1;
 
 /* --dump-sync mode: lag+RAM-hash log (format: "frame lag lagcount djb2").
  * lag and RAM are captured together at each VBL boundary; compare_lags.sh
@@ -551,6 +552,23 @@ void runner_run(void) {
 
     int event_divider = 0;
 
+    /* Unified FM2 timing (match FCEUX): apply movie record N at the START of
+     * frame N. FCEUX calls FCEU_UpdateInput() (controller latch + reset/power
+     * command) before emulating each frame. Our loop ticks the record at the
+     * VBL that ENDS a frame, which applied record N to frame N+1 (one frame
+     * late) — fine for input on most games but wrong for a frame-1 reset
+     * (Battletoads booted an extra time). Pre-load record 1 here so frame N
+     * consumes record N exactly like FCEUX; the in-loop tick then advances to
+     * record N+1 at each frame end. */
+    if (fm2_active()) {
+        uint8_t c0 = 0, c1 = 0, cmd = 0;
+        if (fm2_tick_cmd(&c0, &c1, &cmd)) {
+            controller[0] = c0;
+            controller[1] = c1;
+            if (cmd & 3) nes_reset();
+        }
+        g_lag_flag = 1;   /* begin frame 1 */
+    }
 
     while (g_running) {
 

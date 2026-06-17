@@ -811,49 +811,52 @@ total (ours − fceux); near-zero = FM2 input stays aligned = demo plays
 in sync. "f2f" = frame-to-frame lag match (jitter sensitive — low f2f
 with near-zero drift just means many transient single-frame flips).
 
-After the **hermetic-SRAM** + **ppudead warm-up** + **odd-frame dot-skip**
-fixes:
+After the **hermetic-SRAM** + **unified FM2 timing** (record N applied at
+the START of frame N, like FCEUX) + **ppudead=1** + **odd-frame dot-skip**
++ **DMC steal** fixes:
 
 | Game | Mapper | f2f match | **drift** | verdict |
 |------|--------|-----------|-----------|---------|
-| Mario | NROM-256 | 99.85% | **+1** | in sync |
-| Battlecity | NROM-128 | 99.84% | **+1** | in sync |
-| Adventure¹ | CNROM | 99.86% | **−3** | in sync |
-| Felix | MMC3 | 99.67% | **+1** | in sync |
-| Castle3 | MMC5 | 99.73% | **−793** | in sync² (full 367k playthrough) |
-| Mermaid | UNROM | 99.11% | **−26** | in sync (was −137) |
-| Zelda | MMC1 | **98.96%** | **+1** | in sync (was −16771!) |
-| Battletoads | AxROM | 11.22% | **+69200** | DESYNC³ |
+| Mario | NROM-256 | **100.00%** | **0** | perfect |
+| Battlecity | NROM-128 | **100.00%** | **0** | perfect |
+| Adventure¹ | CNROM | 99.96% | **−4** | in sync |
+| Felix | MMC3 | **100.00%** | **0** | perfect |
+| Castle3 | MMC5 | 99.70% | **−641** | in sync² (full 367k playthrough) |
+| Mermaid | UNROM | 99.57% | **−368** | in sync² |
+| Zelda | MMC1 | **100.00%** | **0** | perfect (was −16771!) |
+| Battletoads | AxROM | 11.28% | +69200 | in sync to ~frame 5800³ |
+
+Pre-unification these were 99.7–99.9% with drift ±1; the unified timing
+took four of them to **exact** 100%/0 and fixed Battletoads' startup.
 
 ¹ Adventure measured over first 20000 frames (movie is 240k).
-² Castle3: now a **full 367k-frame US playthrough** (the old 130k demo
-  and a Japanese Akumajo Densetsu/VRC6 demo were both wrong — see "FM2
-  compatibility" below). 99.73% f2f, drift −793 over 367k = 0.2%, so in
-  sync. The drift is bursty — concentrated in two heavy-slowdown sections
-  (frames ~80–120k and ~320–360k) where FCEUX lags and we don't. This
-  demo drives DMC hard (1.35M byte fetches); DMC steal trims it −825→−793
-  but the bulk is non-DMC sprite/scene slowdown (deeper sprite-eval / OAM
-  timing). NewPPU 0 — needs a Mesen cross-check before treating the
-  residual as our bug. Mermaid's old −137 was largely the missing
-  odd-frame dot skip; now −26.
-³ Battletoads: new FM2 (MD5-verified for our ROM, plays fine in FCEUX).
-  Desyncs early; lag count is noise (different trajectories). See the
-  detailed root-cause analysis under "AxROM (mapper 7) — Battletoads" below.
+² Castle3/Mermaid: in sync with a bursty **slow drift** from heavy-scene
+  slowdown FCEUX models and we don't (Castle3 −641 over 367k = 0.17%;
+  Mermaid −368 over 129k). Both NewPPU 0 — needs a Mesen cross-check
+  before treating as our bug. Not DMC (verified). Low priority.
+³ Battletoads: now **in sync to ~frame 5800** (startup + copy-protection
+  relay fixed by the unified FM2 timing — previously desynced at frame 4).
+  A separate gameplay desync begins ~frame 5800 (cumulative drift jumps
+  from +1 to +347 by frame 6000 and grows ~1/frame — our game lags every
+  frame FCEUX doesn't, i.e. it entered a different state). The full-movie
+  f2f (11%) is post-5800 noise. Next target: trace the ~5800 divergence.
 
 **Key takeaways:**
 - The framebuffer accuracy table (further below) badly under-reported
   sync — it measured cosmetic PPU noise, not whether the demo stays in
-  sync. The lag metric shows **6/8 games play in sync to the end**.
-- Two fixes did it: (1) **hermetic SRAM** (don't load a stale battery
-  save over power-on RAM during playback) and (2) **ppudead warm-up**
-  (suppress VBL/NMI for 2 frames at reset so FM2 input aligns with
-  FCEUX). Together they took Zelda from a hard desync (−16771) to in
-  sync (+1).
-- Remaining real desync: **Battletoads** (copy protection). Castle3/
-  Mermaid are in sync apart from localized old-PPU timing bursts (see ²)
-  — not chased without a Mesen arbiter. The in-sync games' residual
-  jitter (drift ±1–3) is borderline NMI-moment / cycle-count noise (bugs
-  1.4/1.5, plus the unimplemented NTSC odd-frame dot skip).
+  sync. By the lag metric **7/8 games play in sync** (4 of them bit-exact
+  100%/drift-0), and Battletoads' startup is now in sync too.
+- The decisive fixes, in order of impact: (1) **hermetic SRAM** (don't
+  load a stale battery save over power-on RAM); (2) **unified FM2 timing**
+  — apply movie record N at the START of frame N (pre-load record 1, then
+  tick record N+1 at each frame end) exactly like FCEUX, instead of the
+  old VBL-end tick that applied record N one frame late; (3) **ppudead=1**
+  warm-up, the correct value under the unified model. Together these took
+  Mario/Battlecity/Felix/Zelda to exact 100%/0 and fixed Battletoads'
+  copy-protection startup (was desyncing at frame 4).
+- Remaining: **Battletoads** gameplay desync at ~frame 5800 (startup
+  fixed); **Castle3/Mermaid** slow drift from old-PPU heavy-scene slowdown
+  (needs a Mesen arbiter). Both are downstream of correct startup sync.
 
 ### Known limitation — RAM hash phase (TODO: post-NMI snapshot)
 
@@ -869,29 +872,40 @@ snapshot when the NMI handler returns (watch for `cpu.SP` returning to
 its pre-NMI value), not at the VBL boundary. Until then do not treat a
 low RAM% as logic drift when the cumulative lag drift is ~0.
 
-### PPU power-up warm-up ("ppudead") — implemented
+### Unified FM2 timing + PPU warm-up (ppudead=1) — implemented
 
-On real hardware the PPU is not ready immediately after reset: the VBL
-flag is unreliable until the first real VBlank (startup convention: wait
-for TWO VBlanks). FCEUX models this as `ppudead=2` — 2 frames where the
-CPU runs but VBL/NMI is suppressed, so the game spins in its reset
-wait-loop. **Now implemented:** `ppu.c` gates the scanline-241 VBL/NMI
-block on `g_ppudead`; `runner.c` decrements it once per frame AFTER the
-dump logic reads it (earlier ordering bug made frame 2 not gray → 36%
-framebuffer — keep the decrement last).
+**The single biggest sync fix.** FCEUX applies each movie record at the
+START of its frame: `FCEU_UpdateInput()` latches controllers + processes
+reset/power commands, THEN `FCEUPPU_Loop()` emulates the frame. So record
+N drives frame N.
 
-**Result (measured, full movies):** `ppudead=2` is the correct value
-(matches FCEUX). It **fixed Zelda** (lag f2f 78.5%→**98.96%**, drift
-−16771→**+1**) by realigning FM2 input with FCEUX's startup. No
-regression on the other 7 games (Mario/Battlecity/Adventure/Felix
-99.7–99.9%, Castle3/Mermaid unchanged at their own small drift). Verified
-neutral on Battletoads (ppudead 0 vs 2 give identical results — its
-desync is a separate copy-protection/AxROM issue). `ppudead=1` does NOT
-work (Zelda stays desynced); the full 2-frame suppression is required.
+Our loop ticks the record at the VBL that ENDS a frame, which made record
+N drive frame N+1 — one frame late. Harmless for steady-state controller
+input on most games (the poll happens in the next frame's NMI handler
+anyway), but wrong for a frame-1 reset: the game booted once, then got
+reset and booted again (an extra startup iteration → Battletoads desync).
 
-**Still TODO (optional, more precise):** also drop `$2000/$2001/$2005/
-$2006` writes during the ~29658-cycle warm-up window (Mesen-style). Not
-needed for current lag accuracy.
+**Fix (runner_run):** pre-load record 1 before the loop (apply its
+controllers + reset, reset the lag flag), then the in-loop tick at each
+frame end advances to record N+1. Net: frame N consumes record N, exactly
+like FCEUX. Mid-movie resets are handled the same way (applied before the
+frame they belong to).
+
+**PPU warm-up:** `ppu.c` gates the scanline-241 VBL/NMI block on
+`g_ppudead`; `runner.c` decrements it once per frame AFTER the dumps read
+it (keep the decrement last — an earlier ordering bug made frame 2 not
+gray → 36% framebuffer). Under the unified timing the correct value is
+**`ppudead=1`** (not 2 — the old value compensated for the late-input
+model). 
+
+**Result (full-movie lag vs FCEUX):** Mario/Battlecity/Felix/Zelda go to
+**exact 100% / drift 0**; Adventure 99.96%; Battletoads' startup +
+copy-protection now in sync (was desyncing at frame 4 → now ~5800).
+Castle3/Mermaid stay in sync with their own slow heavy-scene drift. This
+replaced the previous hermetic-SRAM+ppudead=2 result (99.7–99.9%, ±1).
+
+**Still TODO (optional, Mesen-style):** drop `$2000/$2001/$2005/$2006`
+writes during the ~29658-cycle warm-up window. Not needed for lag sync.
 
 ### Odd-frame dot skip (NTSC) — implemented
 
