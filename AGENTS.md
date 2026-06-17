@@ -411,16 +411,23 @@ iteration and the relay now lines up. (Ruled out along the way:
 illegal-op cycles, soft-reset completeness, blanket pre-load — which
 broke Zelda.)
 
-**Remaining: gameplay desync at ~frame 5592.** At 5592 the game leaves
-its main loop ($872A wait) for a heavy multi-bank routine (banks 0/1/2/6
-— a level transition / data load) that lags for ~9 frames. FCEUX's run
-of that routine is 9 lag frames; **ours is 10** (one extra), so we exit
-one frame late and the drift becomes +1, then more such heavy routines
-each add ~+1. This is the **same class** as Castle3/Mermaid: a 1-frame
-slip in a heavy routine on a NewPPU-0 demo — a cycle/timing accuracy gap
-(sprite-0 / OAM-DMA / sprite-eval), best arbitrated against Mesen, not a
-unique Battletoads bug. RAM can't pinpoint it (phase-unreliable: 3/4800
-matches) without the post-NMI RAM-snapshot TODO.
+**Remaining: gameplay desync at ~frame 5592 — root-caused.** At 5592 the
+game leaves its main loop ($872A) for a heavy multi-bank level-load
+routine (banks 0/1/2/6) that runs ~9-10 lag frames. Traced it precisely:
+during this routine the game **disables NMI** (PPUCTRL=$10) and does a
+plain **wait-for-VBlank** spin — `$DAD7: LDA $2002; BPL $DAD7` — several
+times. Each wait runs ~1 frame (3371 $2002 reads/frame). Per-frame CPU
+cycle counts are exact (29773-29780), and there is **no NMI/$2002 race**
+(NMI is off). The routine does N such VBL-waits; **ours takes one more**
+because the CPU work between two waits finishes on a slightly different
+scanline than FCEUX, so one wait *just misses* the VBL window and spins an
+extra frame. This is a borderline **CPU↔PPU phase** divergence (absolute
+cycle position within the frame at the moment of the VBL poll), the
+deepest accuracy layer — and on a **NewPPU-0** demo, where FCEUX's own
+VBL-set dot is approximate. Per the reference caveat, not chased against
+FCEUX without a Mesen/hardware arbiter. Ruled out: DMC steal (on/off
+identical here), illegal-op cycles, NMI race. RAM can't pinpoint
+(phase-unreliable, 3/4800) without the post-NMI RAM-snapshot TODO.
 
 **Earlier title-screen fixes (historical):** the title was previously
 stuck; two root fixes were applied:
