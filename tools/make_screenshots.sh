@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Take a screenshot from every game that has a TAS file in fm2/.
-# Each game runs headless for SECONDS seconds with TAS playback,
+# Each game runs headless with TAS playback up to a chosen point in GAME time,
 # then saves a PNG screenshot to docs/assets/.
+#
+# The point is given in seconds of *game* time (60 fps). Because headless
+# playback runs at maximum speed (not real time), seconds are converted to a
+# frame count (seconds * 60) and passed as --frames, so the shot is taken at
+# the right game moment regardless of how fast the host runs.
 #
 # Usage:
 #   ./tools/make_screenshots.sh [--seconds N] [--scale N] [game ...]
 #
 # Examples:
-#   ./tools/make_screenshots.sh                  # all games, 5 s
-#   ./tools/make_screenshots.sh --seconds 10     # all games, 10 s
+#   ./tools/make_screenshots.sh                  # all games, 5 s of game time
+#   ./tools/make_screenshots.sh --seconds 10     # all games, 10 s of game time
 #   ./tools/make_screenshots.sh Mario Zelda      # specific games only
 
 set -euo pipefail
@@ -53,9 +58,10 @@ for game in "${GAMES[@]}"; do
         continue
     fi
 
-    echo -n "[$game] running $SECONDS_ARG s ... "
-    if timeout $((SECONDS_ARG + 10)) \
-            "./$bin" --headless --seconds "$SECONDS_ARG" \
+    frames=$(( SECONDS_ARG * 60 ))   # seconds of game time → frames @ 60 fps
+    echo -n "[$game] running ${SECONDS_ARG}s (${frames} frames) ... "
+    if timeout 120 \
+            "./$bin" --headless --frames "$frames" \
                      --playback "$fm2" \
                      --screenshot "$out" \
                      --scale "$SCALE" \

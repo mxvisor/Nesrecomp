@@ -828,6 +828,14 @@ void runner_run(void) {
                     g_running = 0;
             }
 
+            /* General frame cap: stop after N emulated frames regardless of
+             * mode (dumps, screenshot, or plain playback). FM2 playback ignores
+             * the wall-clock --seconds limit so demos can run to the end at full
+             * speed; --frames is the speed-independent way to stop at a given
+             * point — e.g. a screenshot at "T seconds" = --frames (T*60). */
+            if (g_frame_limit && g_current_frame >= (int)g_frame_limit)
+                g_running = 0;
+
             /* Count down warm-up once per frame, AFTER both dumps read it
              * (framebuffer gray + PPU VBL/NMI suppression key off g_ppudead). */
             if (g_ppudead > 0) g_ppudead--;
