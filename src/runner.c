@@ -561,6 +561,93 @@ int runner_init(const char *title, const char *rom_path) {
 /* =========================================================================
    runner_run
    ========================================================================= */
+/* =========================================================================
+   FCEUX-faithful playback backend (--interp=fceux). See
+   docs/interp-fceux-design.md. Phase 1a: chunk-driven frame loop with VBL/NMI
+   and per-frame bookkeeping. BG/sprite-0/MMC3-IRQ come in phases 1b/1c.
+   ========================================================================= */
+int g_fceux_dot = 0;   /* dots into the current frame (0..89341), the beam pos */
+
+/* Advance the interpreter until the frame reaches >= target_dot, delivering
+ * NMI/IRQ at instruction boundaries (FCEUX X6502_Run analogue, dot units).
+ * Arms g_ppu_catchup_dots per instruction so a mid-instruction $2002 read
+ * resolves to its exact dot (FCEUX lazy LineUpdate). PPU is not stepped — the
+ * frame position is g_fceux_dot itself. */
+static void fceux_run_to(int target_dot) {
+    extern const uint8_t cpu_base_cycles[256];
+    while (g_fceux_dot < target_dot && g_running) {
+        if (g_nmi_pending) {
+            g_nmi_pending = 0; g_nmi_just_fired = 1;
+            stack_push((cpu.PC >> 8) & 0xFF); stack_push(cpu.PC & 0xFF);
+            stack_push(get_P() & ~0x10); cpu.I = 1;
+            cpu.PC = mem_read(0xFFFA) | ((uint16_t)mem_read(0xFFFB) << 8);
+            g_fceux_dot += 7 * 3; continue;
+        }
+        if (g_irq_pending && !cpu.I) {
+            g_irq_pending = 0;
+            stack_push((cpu.PC >> 8) & 0xFF); stack_push(cpu.PC & 0xFF);
+            stack_push(get_P() & ~0x10); cpu.I = 1;
+            cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);
+            g_fceux_dot += 7 * 3; continue;
+        }
+        g_ppu_catchup_dots = cpu_base_cycles[mem_read(cpu.PC)] * 3;
+        g_cpu_cycles = 0;
+        cpu_interp_step();
+        int c = g_cpu_cycles ? (int)g_cpu_cycles : 1;
+        for (int i = 0; i < c; i++) apu_step();
+        g_total_cpu_cycles += c;
+        g_fceux_dot += c * 3;
+        g_ppu_catchup_dots = 0;
+        g_cpu_cycles = 0;
+    }
+}
+
+static void runner_run_fceux(void) {
+    const int SL = 341;
+    while (g_running) {
+        int rendering   = (ppu.regs[1] & 0x18) != 0;
+        int frame_dots  = 262 * SL - ((ppu.frame_odd && rendering) ? 1 : 0);
+        g_fceux_dot = 0;
+
+        /* visible + post-render, up to VBL set (scanline 241, dot 1) */
+        fceux_run_to(241 * SL + 1);
+
+        /* VBL flag + NMI (suppressed during the ppudead warm-up frames) */
+        if (g_ppudead == 0) {
+            ppu.regs[2] |= 0x80;
+            ppu.in_vblank = 1;
+            if (ppu.regs[0] & 0x80) nes_nmi();
+        }
+
+        /* per-frame bookkeeping — mirrors the beam frame_ready block */
+        g_current_frame++;
+        if (g_sync_file) {
+            if (g_lag_flag) g_lag_count++;
+            fprintf(g_sync_file, "%d %d %u %08X\n",
+                    g_current_frame, g_lag_flag, g_lag_count, djb2_buf(ram, 0x800));
+            if (g_frame_limit && g_current_frame >= (int)g_frame_limit) g_running = 0;
+        }
+        if (g_frame_limit && g_current_frame >= (int)g_frame_limit) g_running = 0;
+        if (g_ppudead > 0) g_ppudead--;
+        if (fm2_active()) {
+            g_lag_flag = 1;
+            uint8_t c0 = 0, c1 = 0, fm2_cmd = 0;
+            if (!fm2_tick_cmd(&c0, &c1, &fm2_cmd)) g_running = 0;
+            controller[0] = c0; controller[1] = c1;
+            if (fm2_cmd & 3) nes_reset();
+        }
+
+        /* run vblank, then pre-render clear (scanline 261, dot 1) */
+        fceux_run_to(261 * SL + 1);
+        ppu.regs[2] &= ~0xE0;
+        ppu.in_vblank = 0;
+
+        /* finish the frame */
+        fceux_run_to(frame_dots);
+        ppu.frame_odd ^= 1;
+    }
+}
+
 void runner_run(void) {
 
     int event_divider = 0;
@@ -582,6 +669,10 @@ void runner_run(void) {
         }
         g_lag_flag = 1;   /* begin frame 1 */
     }
+
+    /* FCEUX-faithful playback backend (--interp=fceux): a separate chunk-driven
+     * loop, headless demo playback only. Shares the FM2 pre-load above. */
+    if (g_ppu_backend) { runner_run_fceux(); return; }
 
     while (g_running) {
 

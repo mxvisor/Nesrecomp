@@ -111,10 +111,20 @@ static void vram_write(uint16_t addr, uint8_t val) {
    PPU register read/write
    ========================================================================= */
 uint8_t ppu_read(uint8_t reg) {
-    /* FCEUX-style catch-up: advance the PPU to this read's CPU cycle (interp
-     * mode arms g_ppu_catchup_dots = base_cycles*3) so a $2002 poll observes
-     * the PPU at the read, not a whole instruction behind. See runner_run(). */
-    {
+    extern int g_ppu_backend;
+    if (g_ppu_backend) {
+        /* fceux backend: beam position is g_fceux_dot (dots into the frame),
+         * driven by the chunk loop. fceux_run_to arms g_ppu_catchup_dots =
+         * base_cycles*3 so the read resolves to its exact mid-instruction dot
+         * (FCEUX lazy LineUpdate). No per-dot beam stepping here. */
+        extern int g_fceux_dot, g_ppu_catchup_dots;
+        int d = g_fceux_dot + g_ppu_catchup_dots;
+        ppu.scanline = d / 341;
+        ppu.cycle    = d % 341;
+    } else {
+        /* beam: FCEUX-style catch-up to this read's CPU cycle (interp mode arms
+         * g_ppu_catchup_dots = base_cycles*3) so a $2002 poll observes the PPU
+         * at the read, not a whole instruction behind. See runner_run(). */
         extern int g_ppu_catchup_dots, g_ppu_caught_up;
         if (g_ppu_catchup_dots && !g_ppu_caught_up) {
             g_ppu_caught_up = 1;
@@ -129,7 +139,7 @@ uint8_t ppu_read(uint8_t reg) {
          * suppresses this frame's NMI — and a read one dot early sees VBL still
          * clear. Matches hardware/FCEUX; only observable now that the read is
          * cycle-accurate via PPU catch-up (else the read lands at instr start). */
-        if (ppu.scanline == 241 && ppu.cycle >= 1 && ppu.cycle <= 3) {
+        if (!g_ppu_backend && ppu.scanline == 241 && ppu.cycle >= 1 && ppu.cycle <= 3) {
             extern volatile int g_nmi_pending;
             g_nmi_pending = 0;
             if (ppu.cycle == 1) s &= ~0x80;   /* read just before VBL set */
