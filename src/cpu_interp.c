@@ -383,6 +383,32 @@ int cpu_interp_step(void) {
 }
 
 /* =========================================================================
+   cpu_interp_run_cycles — FCEUX X6502_Run analogue for the --interp=fceux
+   chunk-driven loop: execute whole instructions until at least `cyc` CPU cycles
+   have run, stepping the APU per cycle. Does NOT step the PPU and does NOT
+   deliver interrupts — the fceux main loop owns PPU timing and fires NMI/IRQ at
+   scanline-chunk boundaries. `g_fceux_chunk_cyc` exposes cycles run so far in
+   the current chunk so a mid-chunk $2002 read can resolve the exact PPU dot
+   (FCEUX's lazy FCEUPPU_LineUpdate). Returns actual cycles run (may overshoot
+   `cyc` by the last instruction).
+   ========================================================================= */
+int g_fceux_chunk_cyc = 0;
+int cpu_interp_run_cycles(int cyc) {
+    int ran = 0;
+    g_fceux_chunk_cyc = 0;
+    while (ran < cyc) {
+        g_cpu_cycles = 0;
+        cpu_interp_step();
+        int c = g_cpu_cycles ? (int)g_cpu_cycles : 1;
+        for (int i = 0; i < c; i++) apu_step();
+        ran += c;
+        g_fceux_chunk_cyc = ran;
+        g_cpu_cycles = 0;
+    }
+    return ran;
+}
+
+/* =========================================================================
    cpu_interp_run — interpret from addr until RTS/RTI
    Used as fallback from call_by_address()
    ========================================================================= */
