@@ -67,6 +67,34 @@ From `fceux/src/ppu.cpp` (old path). Left = FCEUX symbol, right = our binding.
 | nametable/palette | our `ppu.vram` + mirroring |
 | `PPU[0..3]`, scroll latches, `$2002` flags, NMI | our `ppu.regs`, `t_addr/v_addr/write_toggle`, VBL/NMI logic (FCEUX's exact dot for VBL set/clear + the suppression we added) |
 
+## 4a. FCEUX old-PPU control structure (key implementation insight)
+
+FCEUX old-PPU is **chunk-driven**, not per-dot. `FCEUPPU_Loop` → `DoLine()`
+per visible scanline runs the CPU in timed chunks via `X6502_Run(N)` and fires
+PPU events *between* chunks (`fceux/src/ppu.cpp:1314`):
+
+```
+DoLine():
+  X6502_Run(256)                  # visible part of the scanline
+  ... deemph ...
+  if (GameHBIRQHook && rendering && (PPU[0]&0x38)!=0x18):
+      X6502_Run(6); X6502_Run(4); GameHBIRQHook();   # MMC3 IRQ at ~cyc 266
+      X6502_Run(85-16-10)
+  else: X6502_Run(6); X6502_Run(85-6-16); [late GameHBIRQHook]
+  X6502_Run(16)
+```
+
+The lazy `FCEUPPU_LineUpdate` runs *during* an `X6502_Run` chunk when the CPU
+touches a PPU register (so `$2002`/sprite-0 reflect the exact mid-scanline
+position). VBL set/clear and NMI happen at chunk boundaries in `FCEUPPU_Loop`.
+
+**Implication for us:** the `fceux` backend is a **separate main loop** that
+drives OUR `cpu_interp_step` in the same chunk structure (a
+`cpu_interp_run_cycles(N)` wrapper that steps until N CPU cycles are consumed),
+firing RefreshLine / sprite-0 / `mapper_scanline` (MMC3 A12) / VBL+NMI at the
+same cycle boundaries. This — not per-dot `ppu_step` — is how A2 stays faithful;
+it naturally yields FCEUX's sprite-0 visibility and IRQ timing.
+
 ## 5. Integration seam
 
 - **Ours:** ROM load (embedded), FM2 player, controller IO, `--dump-sync`,

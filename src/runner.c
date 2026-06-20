@@ -63,6 +63,10 @@ uint64_t g_total_cpu_cycles = 0;
 int g_ppu_catchup_dots = 0;
 int g_ppu_caught_up    = 0;
 
+/* PPU backend: 0 = default beam-accurate (ppu.c), 1 = FCEUX-faithful (ppu_fceux.c).
+ * Selected by --interp=fceux. See docs/interp-fceux-design.md. */
+int g_ppu_backend = 0;
+
 /* FCEUX default NTSC palette (64 entries) — must match FCEUX for hash comparison */
 static const uint8_t FCEUX_PAL_R[64] = {
     0x75, 0x24, 0x00, 0x45, 0x8E, 0xAA, 0xA6, 0x7D, 0x41, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
@@ -1023,6 +1027,12 @@ int main(int argc, char **argv) {
             g_screenshot_path = argv[++i];
         else if (strcmp(argv[i], "--interp") == 0)
             g_interp_mode = 1;
+        else if (strcmp(argv[i], "--interp=fceux") == 0) {
+            /* FCEUX-faithful playback backend (see docs/interp-fceux-design.md).
+             * Implies interp mode; selects the ported FCEUX old-PPU. */
+            g_interp_mode = 1;
+            g_ppu_backend = 1;
+        }
         else if (strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
             g_frame_hash_file = fopen(argv[++i], "w");
             g_headless = 1;
