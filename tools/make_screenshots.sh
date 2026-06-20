@@ -61,7 +61,7 @@ for game in "${GAMES[@]}"; do
     frames=$(( SECONDS_ARG * 60 ))   # seconds of game time → frames @ 60 fps
     echo -n "[$game] running ${SECONDS_ARG}s (${frames} frames) ... "
     if timeout 120 \
-            "./$bin" --headless --frames "$frames" \
+            "./$bin" --headless --interp --frames "$frames" \
                      --playback "$fm2" \
                      --screenshot "$out" \
                      --scale "$SCALE" \
