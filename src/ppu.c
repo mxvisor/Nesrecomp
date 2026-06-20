@@ -111,9 +111,29 @@ static void vram_write(uint16_t addr, uint8_t val) {
    PPU register read/write
    ========================================================================= */
 uint8_t ppu_read(uint8_t reg) {
+    /* FCEUX-style catch-up: advance the PPU to this read's CPU cycle (interp
+     * mode arms g_ppu_catchup_dots = base_cycles*3) so a $2002 poll observes
+     * the PPU at the read, not a whole instruction behind. See runner_run(). */
+    {
+        extern int g_ppu_catchup_dots, g_ppu_caught_up;
+        if (g_ppu_catchup_dots && !g_ppu_caught_up) {
+            g_ppu_caught_up = 1;
+            for (int i = 0; i < g_ppu_catchup_dots; i++) ppu_step();
+        }
+    }
     switch (reg & 7) {
     case 2: {
         uint8_t s = (ppu.regs[2] & 0xE0) | (ppu.open_bus & 0x1F);
+        /* NMI/$2002 race: reading the status register at (or within a CPU
+         * cycle of) the VBL-set dot (241,1; ppu.cycle is post-incremented to 2)
+         * suppresses this frame's NMI — and a read one dot early sees VBL still
+         * clear. Matches hardware/FCEUX; only observable now that the read is
+         * cycle-accurate via PPU catch-up (else the read lands at instr start). */
+        if (ppu.scanline == 241 && ppu.cycle >= 1 && ppu.cycle <= 3) {
+            extern volatile int g_nmi_pending;
+            g_nmi_pending = 0;
+            if (ppu.cycle == 1) s &= ~0x80;   /* read just before VBL set */
+        }
         ppu.nmi_suppressed = 1;
         ppu.regs[2] &= ~0x80;
         ppu.write_toggle = 0;

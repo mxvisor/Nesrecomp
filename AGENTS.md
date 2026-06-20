@@ -348,7 +348,7 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 | `--interp` | Use pure CPU interpreter instead of recompiled code |
 | `--playback fm2/X.fm2` | Replay FM2 input file |
 | `--dump-frames out.txt` | Write per-frame CRC32 hashes of the **framebuffer** (cosmetic comparison with FCEUX). For demo-sync debugging prefer the lag+RAM metric — see "Synchronization Methodology" below. |
-| `--dump-sync out.txt` | Write per-frame `frame lag lagcount djb2(RAM $0000-$07FF)` — the **lag-sequence metric** (primary demo-sync signal). lag and RAM are captured together at the VBL boundary. Use via `tools/compare_lags.sh`. |
+| `--dump-sync out.txt` | Write per-frame `frame lag lagcount djb2(RAM $0000-$07FF)` — the **lag-sequence metric** (primary demo-sync signal). lag and RAM are captured together at the VBL boundary. Use via `tools/verify_all.sh`. |
 | `--frames N` | Stop after N frames |
 | `--seconds N` | Run for N seconds (headless without playback) |
 | `--screenshot path.png` | Save screenshot on exit |
@@ -411,23 +411,64 @@ iteration and the relay now lines up. (Ruled out along the way:
 illegal-op cycles, soft-reset completeness, blanket pre-load — which
 broke Zelda.)
 
-**Remaining: gameplay desync at ~frame 5592 — root-caused.** At 5592 the
-game leaves its main loop ($872A) for a heavy multi-bank level-load
-routine (banks 0/1/2/6) that runs ~9-10 lag frames. Traced it precisely:
-during this routine the game **disables NMI** (PPUCTRL=$10) and does a
-plain **wait-for-VBlank** spin — `$DAD7: LDA $2002; BPL $DAD7` — several
-times. Each wait runs ~1 frame (3371 $2002 reads/frame). Per-frame CPU
-cycle counts are exact (29773-29780), and there is **no NMI/$2002 race**
-(NMI is off). The routine does N such VBL-waits; **ours takes one more**
-because the CPU work between two waits finishes on a slightly different
-scanline than FCEUX, so one wait *just misses* the VBL window and spins an
-extra frame. This is a borderline **CPU↔PPU phase** divergence (absolute
-cycle position within the frame at the moment of the VBL poll), the
-deepest accuracy layer — and on a **NewPPU-0** demo, where FCEUX's own
-VBL-set dot is approximate. Per the reference caveat, not chased against
-FCEUX without a Mesen/hardware arbiter. Ruled out: DMC steal (on/off
-identical here), illegal-op cycles, NMI race. RAM can't pinpoint
-(phase-unreliable, 3/4800) without the post-NMI RAM-snapshot TODO.
+**Remaining: gameplay desync at ~frame 5592 — ROOT-CAUSED (2026-06-18).**
+The 5592 level-load VBL spin is only where the slip *surfaces*; the real
+cause is an accumulating drift that starts at **gameplay frame ~1680** and
+grows a steady **+1 `$2002`-read/frame**. Method: per-frame `$2002`-read
+count, ours vs an FCEUX `memory.registerread` Lua trace, frames 1-5600.
+The cumulative diff is **dead flat (≈0) for frames 1-1680** (we are
+cycle-exact through boot, title, copy protection), then **linear +1.0/frame**
+to 5592 (~+3900 reads). Our instr-cycles/frame (29773.67) and NMI/frame (1)
+are **correct** — it is *not* a cycle/time deficit.
+
+The +1 read/frame is a **sprite-0-hit poll off-by-one**. Battletoads'
+gameplay NMI handler busy-waits on sprite-0 hit:
+`$854B: BIT $2002; $854E: BEQ $854B` (preceded by `LDA #$40` = bit6;
+also $862E/$863E). FCEUX old-PPU **catches the PPU up to the exact CPU
+cycle on every `$2002` read** (`FCEUPPU_LineUpdate`;
+`lastpixel=(timestamp*48-linestartts)>>4`, `CheckSpriteHit` fires when
+beam>`sphitx`+16). OUR PPU steps in **bulk after each instruction**, so a
+`$2002` read observes a PPU lagging by up to ~(cycles×3) dots → the tight
+poll loops **one extra time** before our bit6 sets → +1 read/frame →
+accumulates to a one-frame slip by the 5592 level load.
+
+Why the 4 bit-exact games (Mario/Battlecity/Felix/Zelda, all NewPPU-0) are
+unaffected: VBL (bit7) is a sticky scanline-boundary event (±1 dot doesn't
+change the poll count), and Mario's sprite-0 hit lands with slack before
+its poll starts (first `BIT` already sees it set). Only a *tight* sprite-0
+poll, as in Battletoads, exposes the lag.
+
+**Fix attempted (2026-06-18): FCEUX-style PPU catch-up before a PPU register
+read (interp mode).** Implemented in `src/`: `cpu_base_cycles[256]`
+(cpu_interp.c), `g_ppu_catchup_dots`/`g_ppu_caught_up` armed per top-level
+interp instruction (runner.c), and `ppu_read()` steps the PPU by
+`base_cycles*3` dots at the read so a `$2002` poll is observed at the read's
+cycle (not a whole instruction behind); runner_run steps only the remainder.
+Plus an NMI/`$2002` race-suppression window at scanline 241. Gated only to
+interp (dispatch sets `g_ppu_catchup_dots=0`).
+
+Result: **all bit-exact games stay bit-exact** (Mario/Battlecity/Felix/Zelda
+100% drift 0; Adventure 100% drift −4) — zero regressions. It **cut
+Battletoads' `$2002`-read drift ~64%** (cum@5600 +3354 → +1213; slope
++1.0→+0.39/frame) but did **not** move the 5580 level-load slip: the residual
+is the **sprite-0-hit visibility timing**. FCEUX old-PPU exposes sprite-0 hit
+via its *lazy* renderer (`lastpixel` derived from the CPU timestamp runs ahead
+of the real beam; `CheckSpriteHit` fires when `lastpixel>sphitx+16`), which is
+fundamentally different from our beam-accurate per-dot PPU. Empirically,
+delaying our hit only worsens the drift and firing earlier than the overlap
+pixel is non-physical — so closing the last 36% needs replicating FCEUX's
+lazy lastpixel model (large architectural change, on an approximate NewPPU-0
+reference). The catch-up is kept as a genuine correctness improvement. Ruled
+out: DMC steal, illegal-op cycles, per-frame cycle deficit, catch-up *amount*
+(non-monotonic/overfit), uniform sprite-0 dot offset.
+
+**Optional future task:** add a selectable **FCEUX-faithful interpreter mode**
+(`--interp=fceux`, extensible to `--interp=accurate|fast`) that replicates
+FCEUX's lazy renderer (`lastpixel`/`CheckSpriteHit lastpixel>sphitx+16`) so
+frame-perfect demos play back exactly like FCEUX (Battletoads past ~5580) for
+fuller address collection. Keep the beam-accurate `--interp` as default; the
+register catch-up above is the foundation, the lazy sprite-0 visibility is the
+remaining (architectural) piece. Verify with `tools/verify_all.sh`.
 
 **Earlier title-screen fixes (historical):** the title was previously
 stuck; two root fixes were applied:
@@ -765,20 +806,24 @@ differences": we measure the layer most polluted by cosmetic noise.
 
 ### Tooling — implemented
 
-Run the whole comparison with one command:
+Run the whole comparison with one command — `tools/verify_all.sh`:
 
 ```bash
-make GAME=Battlecity                 # build first
-tools/compare_lags.sh Battlecity     # whole movie (auto-caps to FM2 length)
-tools/compare_lags.sh Battlecity 300 # first 300 frames (fast iteration)
+tools/verify_all.sh                 # every game (builds, runs, compares)
+tools/verify_all.sh Contraf         # one game + first-divergence detail block
+REBUILD=0 tools/verify_all.sh       # skip make (use existing bin/GAME)
+FCEUX=0   tools/verify_all.sh       # cached refs only, never launch FCEUX
 ```
 
-It dumps both sides into `lags/GAME.ours.txt` and `lags/GAME.fceux.txt`
-(format `frame lag lagcount djb2(RAM $0000-$07FF)`), then compares
-**frame-to-frame** (no offset fitting — fitting an offset hides real
-transient divergences) and prints: lag match %, divergent-frame count,
-cumulative lag drift, and the first lag divergence with surrounding
-context. Exit 0 = lags match end-to-end.
+For each game it (1) checks the FM2's romChecksum against `rom/GAME.nes`
+(skips on mismatch — wrong ROM), (2) runs our interpreter
+(`--dump-sync → lags/GAME.ours.txt`), (3) reuses `lags/GAME.fceux.txt`,
+regenerating it via FCEUX only when missing or when the FM2 changed
+(tracked by `lags/GAME.fm2.md5`), then (4) prints a summary table
+(`lagMatch% drift 1stSustDiv 1stRAMdiv`); a single game also gets a
+first-divergence detail block. Format of the dumps:
+`frame lag lagcount djb2(RAM $0000-$07FF)`. Comparison is **frame-to-frame**
+(no offset fitting — fitting an offset hides real transient divergences).
 
 - [x] `--dump-sync out.txt`: emits `frame lag lagcount djb2(RAM
   $0000-$07FF)`. lag and RAM are captured **together** at the VBL
@@ -789,7 +834,7 @@ context. Exit 0 = lags match end-to-end.
   advance. Debug peeks do not touch it.
 - [x] FCEUX-side: `tools/fceux_dump.lua` (`emu.lagged()`,
   `memory.readbyterange(0,0x800)`, djb2, `emu.speedmode("nothrottle")`,
-  `os.exit(0)` to stop at movie end). `compare_lags.sh` bakes the OUT
+  `os.exit(0)` to stop at movie end). `verify_all.sh` bakes the OUT
   path and frame cap into a temp copy per run.
 
 ### Interpreting the result (cumulative lag drift is the verdict)
@@ -805,7 +850,7 @@ first frame where the running totals start to separate.
 
 ### Lag-sequence results — all games (interpreter, full movie)
 
-Generated with `tools/compare_lags.sh GAME`. "drift" = cumulative lag
+Generated with `tools/verify_all.sh`. "drift" = cumulative lag
 total (ours − fceux); near-zero = FM2 input stays aligned = demo plays
 in sync. "f2f" = frame-to-frame lag match (jitter sensitive — low f2f
 with near-zero drift just means many transient single-frame flips).
@@ -976,7 +1021,7 @@ extra_func / bank-aware needed).
 (Mermaid UNROM ≈ 24500 functions); compiling that with `-O2` exhausts
 RAM. `INTERP=1` drops Mermaid's build peak from OOM to ~53 MB and is
 byte-identical at runtime under `--interp` (verified: Battlecity/Mermaid
-lag results unchanged). **Use `INTERP=1` for all `compare_lags.sh`
+lag results unchanged). **Use `INTERP=1` for all `verify_all.sh`
 testing.** Editing a shared header (e.g. `apu.h`) under a normal build
 forces recompiling the giant `_full.c` — another reason to use INTERP.
 

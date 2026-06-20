@@ -54,6 +54,15 @@ static int g_hermetic = 0;
 /* Total CPU cycles since power-on */
 uint64_t g_total_cpu_cycles = 0;
 
+/* FCEUX-style PPU catch-up before a PPU register access (interp mode only).
+ * g_ppu_catchup_dots is armed each instruction with base_cycles*3; when the
+ * instruction reads a PPU register, ppu_read() steps the PPU by that many dots
+ * (so the read observes the PPU at the read's cycle, not a whole instruction
+ * behind) and sets g_ppu_caught_up so runner_run steps only the remainder.
+ * Armed only on the top-level interp step; 0 in dispatch mode (no catch-up). */
+int g_ppu_catchup_dots = 0;
+int g_ppu_caught_up    = 0;
+
 /* FCEUX default NTSC palette (64 entries) — must match FCEUX for hash comparison */
 static const uint8_t FCEUX_PAL_R[64] = {
     0x75, 0x24, 0x00, 0x45, 0x8E, 0xAA, 0xA6, 0x7D, 0x41, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
@@ -754,7 +763,18 @@ void runner_run(void) {
             }
         }
 
-        if (g_interp_mode) cpu_interp_step(); else call_by_address(cpu.PC);
+        if (g_interp_mode) {
+            /* Arm FCEUX-style PPU catch-up for this instruction (interp only):
+             * base_cycles*3 dots are stepped at the PPU-register read so it is
+             * observed at the read's cycle, not a whole instruction behind. */
+            extern const uint8_t cpu_base_cycles[256];
+            g_ppu_catchup_dots = cpu_base_cycles[mem_read(cpu.PC)] * 3;
+            g_ppu_caught_up    = 0;
+            cpu_interp_step();
+        } else {
+            g_ppu_catchup_dots = 0;   /* dispatch mode: never catch up */
+            call_by_address(cpu.PC);
+        }
 
         if (g_cpu_cycles == 0)
             g_cpu_cycles = 1;
@@ -764,8 +784,15 @@ void runner_run(void) {
         for (uint32_t c = 0; c < g_cpu_cycles; c++)
             apu_step();
 
-        for (uint32_t c = 0; c < g_cpu_cycles * 3; c++)
-            ppu_step();
+        /* If a PPU register read already caught the PPU up part-way through this
+         * instruction, step only the remaining dots so total stays cycles*3. */
+        {
+            int total   = (int)(g_cpu_cycles * 3);
+            int already  = g_ppu_caught_up ? g_ppu_catchup_dots : 0;
+            if (already > total) already = total;
+            for (int c = already; c < total; c++)
+                ppu_step();
+        }
 
         g_cpu_cycles = 0;
 
