@@ -883,9 +883,19 @@ desync.
   sustained divergence**, so the demo stays in sync to the end. Adventure
   is now measured over the full 240k-frame movie (the old cached ref was
   capped at 20k). Low priority; would need a Mesen arbiter to call ours-vs-FCEUX.
-² **Contraf** (MMC3) desyncs at ~10581. ROM matches the fm2 (checked).
-  Suspect MMC3 scanline-IRQ timing (our dot-260 vs FCEUX ~dot-266) — i.e.
-  likely a **mapper-level** fix, more tractable than Battletoads. Untraced.
+² **Contraf** (MMC3) desyncs by a discrete 1-frame slip at ~frame 10565
+  (in sync, drift≈0, before it; first $2002-read divergence at frame 10565:
+  ours 13 vs FCEUX 6). ROM matches the fm2 (checked). It uses MMC3 scanline
+  IRQ for raster splits (2/frame, handler $F728: ack/re-arm $E000/$E001 →
+  RAM-vectored `JMP ($004C)` → bank switch) and toggles rendering mid-frame
+  (mask 18↔00). **Ruled out:** the IRQ fire dot (sweep 260→270 is flat — a
+  uniform dot shift doesn't change relative IRQ timing) and **sprite-0** (the
+  code has NO BVS/BVC polls, only VBL bit7) — so it is NOT the Battletoads
+  lazy-sprite-0 class and NOT the easy dot fix. Remaining suspects (untraced):
+  MMC3 IRQ-counter clocking across the rendering-toggle frames (A12 clocks
+  only while rendering — a 1-scanline disagreement on the toggle shifts an
+  IRQ) or a $2002/NMI VBL-read race at the frame boundary. Deep sub-cycle
+  timing, comparable to Battletoads.
 ³ **Battletoads** (AxROM) desyncs at 5580 — the residual is FCEUX's lazy
   sprite-0-hit visibility (see AxROM section); needs the optional
   `--interp=fceux` mode. Startup + copy protection are in sync.
@@ -898,8 +908,9 @@ desync.
   timing** (record N at the START of frame N, like FCEUX); (3) **ppudead=1**
   warm-up; (4) **PPU-register catch-up** (cycle-accurate $2002 reads in
   interp — cut Battletoads' read-drift ~64%, zero regressions).
-- Remaining frontier: the 2 desyncs — **Contraf 10581** (likely MMC3 IRQ,
-  mapper-level) and **Battletoads 5580** (lazy-render sprite-0, needs
+- Remaining frontier: the 2 desyncs, both **deep sub-cycle timing** —
+  **Contraf @10565** (MMC3 raster-split; IRQ-dot & sprite-0 ruled out — see
+  note ²) and **Battletoads @5580** (lazy-render sprite-0, needs
   `--interp=fceux`).
 
 ### Known limitation — RAM hash phase (TODO: post-NMI snapshot)
