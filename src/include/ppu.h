@@ -45,4 +45,12 @@ void    ppu_write(uint8_t reg, uint8_t val);
 void    ppu_step(void);
 void    ppu_run(int clocks);
 
+/* --interp=fceux chunk-driven backend (FCEUX old-PPU lazy render). See
+ * docs/interp-fceux-design.md and runner_run_fceux(). */
+void    fceux_line_begin(int sl);   /* per visible scanline: copy_hori, render BG
+                                       opacity, evaluate sprite-0 for the line */
+void    fceux_line_end(int sl);     /* EndRL: CheckSpriteHit(272), inc_vert */
+void    fceux_prerender(void);      /* pre-render: copy_vert (set up line-0 v) */
+void    fceux_on_2002_read(void);   /* lazy LineUpdate at a $2002 read */
+
 #endif /* PPU_H */

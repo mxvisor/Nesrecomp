@@ -562,17 +562,18 @@ int runner_init(const char *title, const char *rom_path) {
    runner_run
    ========================================================================= */
 /* =========================================================================
-   FCEUX-faithful playback backend (--interp=fceux). See
-   docs/interp-fceux-design.md. Phase 1a: chunk-driven frame loop with VBL/NMI
-   and per-frame bookkeeping. BG/sprite-0/MMC3-IRQ come in phases 1b/1c.
+   FCEUX-faithful chunk-driven playback backend (--interp=fceux). Headless demo
+   verification only. Mirrors FCEUX old-PPU DoLine: run the CPU in per-scanline
+   dot chunks, render/sprite-0-check lazily (ppu.c fceux_* hooks). See
+   docs/interp-fceux-design.md and AGENTS.md AxROM section.
    ========================================================================= */
-int g_fceux_dot = 0;   /* dots into the current frame (0..89341), the beam pos */
+int g_fceux_dot = 0;   /* dots into the current frame, the lazy beam position */
 
-/* Advance the interpreter until the frame reaches >= target_dot, delivering
- * NMI/IRQ at instruction boundaries (FCEUX X6502_Run analogue, dot units).
- * Arms g_ppu_catchup_dots per instruction so a mid-instruction $2002 read
- * resolves to its exact dot (FCEUX lazy LineUpdate). PPU is not stepped — the
- * frame position is g_fceux_dot itself. */
+/* Run the interpreter until the frame reaches >= target_dot, delivering NMI/IRQ
+ * at instruction boundaries (FCEUX X6502_Run; arg is in PPU dots, 3 dots = 1 CPU
+ * cycle, fractional carry preserved by the cumulative g_fceux_dot). Arms
+ * g_ppu_catchup_dots so a mid-instruction $2002 read resolves to its exact dot
+ * (lazy LineUpdate). No per-dot beam stepping. */
 static void fceux_run_to(int target_dot) {
     extern const uint8_t cpu_base_cycles[256];
     while (g_fceux_dot < target_dot && g_running) {
@@ -604,22 +605,38 @@ static void fceux_run_to(int target_dot) {
 
 static void runner_run_fceux(void) {
     const int SL = 341;
+    g_fceux_dot = 0;
     while (g_running) {
-        int rendering   = (ppu.regs[1] & 0x18) != 0;
-        int frame_dots  = 262 * SL - ((ppu.frame_odd && rendering) ? 1 : 0);
-        g_fceux_dot = 0;
+        /* FCEUX old-PPU alternates the frame length 89342/89341 via `kook`
+         * (X6502_Run(16-kook); kook^=1) UNCONDITIONALLY every frame — not gated
+         * by rendering as the beam path does. Match that here. */
+        int frame_dots = 262 * SL - (ppu.frame_odd ? 1 : 0);
+        /* NB: do NOT reset g_fceux_dot to 0 each frame — the last instruction of
+         * a frame overshoots frame_dots; FCEUX carries that remainder in _count
+         * so the CPU/PPU phase drifts across frames exactly as on hardware. We
+         * carry it by subtracting frame_dots at frame end (below). */
 
-        /* visible + post-render, up to VBL set (scanline 241, dot 1) */
-        fceux_run_to(241 * SL + 1);
+        /* ---- visible scanlines 0..239: DoLine structure ---- */
+        for (int sl = 0; sl < 240; sl++) {
+            fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
+            fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
+            fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
+            fceux_run_to((sl + 1) * SL);   /* HBlank to next line start */
+        }
 
-        /* VBL flag + NMI (suppressed during the ppudead warm-up frames) */
+        /* ---- post-render line 240, then VBL set at scanline 241 dot 0 ----
+         * FCEUX FCEUPPU_Loop: X6502_Run(341) [post-render], PPU_status|=0x80,
+         * X6502_Run(12), THEN TriggerNMI — i.e. NMI is delivered 12 dots after
+         * the VBL flag is set, not immediately. */
+        fceux_run_to(241 * SL);
         if (g_ppudead == 0) {
             ppu.regs[2] |= 0x80;
             ppu.in_vblank = 1;
-            if (ppu.regs[0] & 0x80) nes_nmi();
         }
+        fceux_run_to(241 * SL + 12);
+        if (g_ppudead == 0 && (ppu.regs[0] & 0x80)) nes_nmi();
 
-        /* per-frame bookkeeping — mirrors the beam frame_ready block */
+        /* ---- per-frame bookkeeping — mirrors the beam frame_ready block ---- */
         g_current_frame++;
         if (g_sync_file) {
             if (g_lag_flag) g_lag_count++;
@@ -637,14 +654,14 @@ static void runner_run_fceux(void) {
             if (fm2_cmd & 3) nes_reset();
         }
 
-        /* run vblank, then pre-render clear (scanline 261, dot 1) */
+        /* ---- vblank, then pre-render (clear status, restore vertical v) ---- */
         fceux_run_to(261 * SL + 1);
         ppu.regs[2] &= ~0xE0;
         ppu.in_vblank = 0;
-
-        /* finish the frame */
         fceux_run_to(frame_dots);
+        fceux_prerender();                 /* copy_vert: set up line-0 v for next */
         ppu.frame_odd ^= 1;
+        g_fceux_dot -= frame_dots;         /* carry the instruction overshoot */
     }
 }
 
@@ -670,8 +687,9 @@ void runner_run(void) {
         g_lag_flag = 1;   /* begin frame 1 */
     }
 
-    /* FCEUX-faithful playback backend (--interp=fceux): a separate chunk-driven
-     * loop, headless demo playback only. Shares the FM2 pre-load above. */
+    /* FCEUX-faithful playback backend (--interp=fceux): chunk-driven DoLine loop
+     * with lazy sprite-0 render (ppu.c fceux_*). Headless demo verification only;
+     * shares the FM2 pre-load above. See docs/interp-fceux-design.md. */
     if (g_ppu_backend) { runner_run_fceux(); return; }
 
     while (g_running) {

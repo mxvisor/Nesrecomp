@@ -470,6 +470,40 @@ fuller address collection. Keep the beam-accurate `--interp` as default; the
 register catch-up above is the foundation, the lazy sprite-0 visibility is the
 remaining (architectural) piece. Verify with `tools/verify_all.sh`.
 
+**IMPLEMENTED (2026-06-21): `--interp=fceux` chunk-driven backend.** A separate
+headless playback backend (gated by `g_ppu_backend`; default beam path + the
+recompiler stay byte-identical). `runner_run_fceux()` (src/runner.c) drives the
+CPU in FCEUX `DoLine` per-scanline dot chunks (`fceux_run_to`, dots; 3 dots = 1
+CPU cyc, fractional remainder carried across frames via `g_fceux_dot -=
+frame_dots`); rendering is lazy in src/ppu.c (`fceux_line_begin/line_end/
+prerender/on_2002_read`): BG opacity computed once per visible line, sprite-0 hit
+checked only at `$2002` reads (lastpixel) and line end (EndRL CheckSpriteHit(272))
+— exactly FCEUX. Also matched FCEUX's VBL→`X6502_Run(12)`→TriggerNMI 12-dot NMI
+delay and the unconditional odd-frame dot skip (`kook`, not rendering-gated).
+Result: Battletoads `--interp=fceux` drift **+69199 → +19217 (−72%)**, lagMatch
+11.3% → 69.5%; Mario `--interp=fceux` 100%/drift 0.
+
+**Battletoads residual ROOT-CAUSED (2026-06-21) — copy-protection NMI cycle
+precision.** Traced byte-by-byte vs FCEUX RAM dumps: the only persistent RAM
+divergence is a 3-byte RNG `$25-$27` (generator `LDA$25;EOR$28;ADC$27;ROL;SBC$28;
+…` at `$8743`/`$DAD1`) that diverges at **exactly frame 15** and feeds gameplay
+~5000 frames later → the level-load desync. Frame 15 is the first frame of a
+**wait-for-NMI RNG churn loop** (`$871F: JSR $8728; JSR $8743; JMP $871F`, ~562
+cyc/iter, spins advancing the RNG until NMI). FCEUX runs **52** iterations there,
+we run **53** — one extra. The extra iteration comes from a **timing-gated
+`$2007` VRAM upload** (`$8150-$81A6`, rendering off during the load) being
+interrupted by the NMI at a slightly different point: our per-frame upload split
+differs ±4-13 bytes (frame 11 −4, 13 +1, 14 +9, 15 −13), shifting the upload→RNG
+handoff by one iteration. The NMI handler is the **bank-switching copy-protection
+relay** — the NMI *vector itself is bank-dependent* (`$FF98` only at frame 15;
+other frames enter a different bank's handler), so its duration varies per frame.
+Verified NOT the cause: `cpu_base_cycles` is byte-identical to FCEUX `CycTable`;
+per-frame totals match (~29780.5 cyc); the 12-dot NMI delay and odd-frame skip
+are now exact. Remaining gap = sub-frame cycle-exactness of the copy-protection
+bank-switching NMI handler (deliberately intricate anti-piracy; likely at/beyond
+the NewPPU-0 approximation limit). Next: per-instruction dual cycle trace of the
+`$FF98` handler across bank switches (frames 11-15).
+
 **Earlier title-screen fixes (historical):** the title was previously
 stuck; two root fixes were applied:
 
