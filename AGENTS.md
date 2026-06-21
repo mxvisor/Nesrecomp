@@ -483,6 +483,17 @@ delay and the unconditional odd-frame dot skip (`kook`, not rendering-gated).
 Result: Battletoads `--interp=fceux` drift **+69199 → +19217 (−72%)**, lagMatch
 11.3% → 69.5%; Mario `--interp=fceux` 100%/drift 0.
 
+**MMC3 scanline IRQ added to the fceux backend (2026-06-21).** `runner_run_fceux`
+fires `mapper_scanline()` per visible scanline at dot 266 (FCEUX `DoLine`
+GameHBIRQHook = X6502_Run(256)+6+4) when rendering and `(PPU[0]&0x38)!=0x18`.
+Brings **Felix `--interp=fceux` 99.3% → 100%/drift 0** (bit-exact) and
+**Contraf 1stSustDiv 10581 → None** (Mermaid/Superc fceux drift also improved).
+**Limitation:** the fceux backend does NOT support **MMC5** — Castle3
+`--interp=fceux` is 2.9% (m5_in_frame / MMC5 PPU state is tracked in `ppu_step`,
+which the chunk loop doesn't call; the lazy render has no MMC5 ExRAM/split path).
+Beam Castle3 stays 99.7% — fceux is opt-in for demo verification, MMC5 unaffected
+on the default path. MMC5-in-fceux would be a separate port.
+
 **Battletoads residual ROOT-CAUSED (2026-06-21) — copy-protection NMI cycle
 precision.** Traced byte-by-byte vs FCEUX RAM dumps: the only persistent RAM
 divergence is a 3-byte RNG `$25-$27` (generator `LDA$25;EOR$28;ADC$27;ROL;SBC$28;
@@ -917,19 +928,22 @@ desync.
   sustained divergence**, so the demo stays in sync to the end. Adventure
   is now measured over the full 240k-frame movie (the old cached ref was
   capped at 20k). Low priority; would need a Mesen arbiter to call ours-vs-FCEUX.
-² **Contraf** (MMC3) desyncs by a discrete 1-frame slip at ~frame 10565
-  (in sync, drift≈0, before it; first $2002-read divergence at frame 10565:
-  ours 13 vs FCEUX 6). ROM matches the fm2 (checked). It uses MMC3 scanline
-  IRQ for raster splits (2/frame, handler $F728: ack/re-arm $E000/$E001 →
-  RAM-vectored `JMP ($004C)` → bank switch) and toggles rendering mid-frame
-  (mask 18↔00). **Ruled out:** the IRQ fire dot (sweep 260→270 is flat — a
-  uniform dot shift doesn't change relative IRQ timing) and **sprite-0** (the
-  code has NO BVS/BVC polls, only VBL bit7) — so it is NOT the Battletoads
-  lazy-sprite-0 class and NOT the easy dot fix. Remaining suspects (untraced):
-  MMC3 IRQ-counter clocking across the rendering-toggle frames (A12 clocks
-  only while rendering — a 1-scanline disagreement on the toggle shifts an
-  IRQ) or a $2002/NMI VBL-read race at the frame boundary. Deep sub-cycle
-  timing, comparable to Battletoads.
+² **Contraf** (MMC3) — ROOT-CAUSED (2026-06-21). The 10581 beam desync had two
+  parts, both since fixed/explained:
+  (a) **Controller-port open bus** — `$4016/$4017` reads must return the open-bus
+  $40 (bit 6, the high byte of the $40xx address) in the upper bits; we returned
+  $00. Contra Force stores the raw read (`$FFD6: STA $04`, `$FFE1: STA $05`), so
+  $04/$05 diverged from frame ~5. Fixed in `ctrl_read()` (src/memory.c, `| 0x40`).
+  Hardware/FCEUX-correct; **no regression** (Mario/Battlecity/Felix/Zelda beam
+  byte-identical; only Superc/Castle3 RAM hashes shift, and those never matched
+  FCEUX anyway — same engine, same churn).
+  (b) **Timing-churned RNG** — `$0029` is an entropy accumulator churned by an
+  infinite wait loop `$FD62: LDA $29; ADC $23; STA $29; JMP $FD62` (CLI'd, broken
+  only by NMI/IRQ). Its per-frame value depends on the exact CPU cycles until the
+  next interrupt — same precision class as Battletoads' RNG churn, **not** copy
+  protection. Still diverges (RAM never bit-matches), so Contraf stays ~70%
+  lagMatch, but with the fceux MMC3 IRQ (below) it no longer *sustained*-desyncs:
+  **`--interp=fceux` Contraf 1stSustDiv 10581 → None.**
 ³ **Battletoads** (AxROM) desyncs at 5580 — the residual is FCEUX's lazy
   sprite-0-hit visibility (see AxROM section); needs the optional
   `--interp=fceux` mode. Startup + copy protection are in sync.

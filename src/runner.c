@@ -621,6 +621,13 @@ static void runner_run_fceux(void) {
             fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
             fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
             fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
+            /* MMC3 scanline IRQ (GameHBIRQHook): FCEUX DoLine fires it at
+             * X6502_Run(256)+6+4 = dot 266, when rendering and the two pattern
+             * tables aren't both in the upper half ((PPU[0]&0x38)!=0x18). */
+            if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
+                fceux_run_to(sl * SL + 266);
+                mapper_scanline();
+            }
             fceux_run_to((sl + 1) * SL);   /* HBlank to next line start */
         }
 

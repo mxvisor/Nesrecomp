@@ -39,15 +39,18 @@ void ctrl_write(uint8_t val) {
 
 uint8_t ctrl_read(int port) {
     g_lag_flag = 0;  /* game read controller → not a lag frame */
+    /* $4016/$4017 upper bits read back as open bus = $40 (bit 6), the high byte
+     * of the $40xx address left on the data bus. Hardware/FCEUX behaviour; games
+     * that store the raw read (e.g. Contra Force $04/$05) desync without it. */
     if (ctrl_strobe) {
         /* Strobe high: always return A button (bit 7) */
-        return (controller[port] >> 7) & 1;
+        return ((controller[port] >> 7) & 1) | 0x40;
     }
     /* Shift out next bit, MSB first */
     uint8_t bit = (ctrl_shift[port] >> 7) & 1;
     ctrl_shift[port] <<= 1;
     ctrl_shift[port] |= 1; /* bus returns 1 after all 8 bits shifted out */
-    return bit;
+    return bit | 0x40;
 }
 
 /* =========================================================================
