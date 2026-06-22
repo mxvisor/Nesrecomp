@@ -614,3 +614,70 @@ void fceux_line_end(int sl) {
     if (ppu.regs[1] & 0x18) inc_vert_v();     /* advance to next line's row */
     fc_cur_line = -1;
 }
+
+/* Full-colour render of visible line sl into ppu.framebuf — for --interp=fceux
+ * video/screenshots only (the sync path needs only opacity). Self-contained:
+ * walks the line-start loopy v for BG (colour + palette), evaluates this line's
+ * sprites (reusing eval_sprites), combines with priority, and looks up the NES
+ * palette. Call AFTER fceux_line_begin (v is set up for the line); raster splits
+ * are honoured because it runs per scanline with that line's CHR/scroll. */
+void fceux_render_line(int sl) {
+    uint32_t *outp = &ppu.framebuf[sl * SCREEN_W];
+    uint8_t  *outi = &ppu.indexbuf[sl * SCREEN_W];
+
+    uint8_t bgpix[256], bgpal[256];
+    for (int i = 0; i < 256; i++) { bgpix[i] = 0; bgpal[i] = 0; }
+
+    if (ppu.regs[1] & 0x08) {                       /* BG enabled */
+        mapper.m5_bg_chr = 1;
+        uint16_t v       = ppu.v_addr;
+        uint16_t pt_base = (ppu.regs[0] & 0x10) ? 0x1000 : 0x0000;
+        int      x       = 0;
+        int      startbit = ppu.fine_x;
+        while (x < 256) {
+            uint16_t nt_addr = 0x2000 | (v & 0x0FFF);
+            uint8_t  tile    = vram_read(nt_addr);
+            uint16_t at_addr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
+            uint8_t  attr    = vram_read(at_addr);
+            uint8_t  pal     = (attr >> (((v >> 4) & 4) | (v & 2))) & 3;
+            uint8_t  fine_y  = (v >> 12) & 7;
+            uint8_t  lo      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y);
+            uint8_t  hi      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y + 8);
+            for (int bit = startbit; bit < 8 && x < 256; bit++) {
+                bgpix[x] = ((lo >> (7 - bit)) & 1) | (((hi >> (7 - bit)) & 1) << 1);
+                bgpal[x] = pal;
+                x++;
+            }
+            startbit = 0;
+            if ((v & 0x001F) == 31) { v &= ~0x001F; v ^= 0x0400; } else v++;
+        }
+        if (!(ppu.regs[1] & 0x02))                  /* BG left-column clip */
+            for (int i = 0; i < 8; i++) bgpix[i] = 0;
+    }
+
+    eval_sprites(sl);                               /* fills ppu.sp_* for this line */
+
+    for (int x = 0; x < 256; x++) {
+        uint8_t bgp = bgpix[x], bgpl = bgpal[x];
+        uint8_t spp = 0, sppl = 0, sppri = 0;
+        if ((ppu.regs[1] & 0x10) && (x >= 8 || (ppu.regs[1] & 0x04))) {
+            for (int i = 0; i < ppu.sprite_count; i++) {
+                int sx = x - (int)ppu.sp_x[i];
+                if (sx < 0 || sx > 7) continue;
+                uint8_t p = ((ppu.sp_pattern_lo[i] >> (7 - sx)) & 1)
+                          | (((ppu.sp_pattern_hi[i] >> (7 - sx)) & 1) << 1);
+                if (!p) continue;
+                spp = p; sppl = (ppu.sp_attr[i] & 3) + 4; sppri = (ppu.sp_attr[i] >> 5) & 1;
+                break;
+            }
+        }
+        uint8_t pal_addr;
+        if      (!bgp && !spp) pal_addr = 0;
+        else if (!bgp &&  spp) pal_addr = sppl * 4 + spp;
+        else if ( bgp && !spp) pal_addr = bgpl * 4 + bgp;
+        else pal_addr = sppri ? (bgpl * 4 + bgp) : (sppl * 4 + spp);
+        uint8_t color = vram_read(0x3F00 + pal_addr) & 0x3F;
+        outp[x] = PALETTE[color];
+        outi[x] = color;
+    }
+}

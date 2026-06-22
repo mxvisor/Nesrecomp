@@ -610,6 +610,10 @@ static void fceux_run_to(int target_dot) {
 
 static void runner_run_fceux(void) {
     const int SL = 341;
+    /* Render full-colour lines only when there's somewhere to show them — a live
+     * window or a --screenshot. Headless lag dumps skip it (sync needs only the
+     * lazy opacity render, so the corpus stays fast). */
+    int want_video = (!g_headless || g_screenshot_path != NULL);
     g_fceux_dot = 0;
     while (g_running) {
         /* FCEUX old-PPU alternates the frame length 89342/89341 via `kook`
@@ -629,6 +633,7 @@ static void runner_run_fceux(void) {
         /* ---- visible scanlines 0..239: DoLine structure ---- */
         for (int sl = 0; sl < 240; sl++) {
             fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
+            if (want_video) fceux_render_line(sl);  /* full-colour line → framebuf */
             fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
             fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
             /* Scanline IRQ clock. MMC3 (GameHBIRQHook): FCEUX DoLine fires it at
@@ -683,6 +688,38 @@ static void runner_run_fceux(void) {
             if (fm2_cmd & 3) nes_reset();
         }
 
+        /* ---- video: events + present (live window only) ---- */
+        if (!g_headless) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_QUIT) { g_running = 0; break; }
+                if (ev.type == SDL_KEYDOWN) {
+                    SDL_Keycode k = ev.key.keysym.sym;
+                    if (k == SDLK_ESCAPE) { g_running = 0; break; }
+                    if (k == SDLK_F12) {
+                        char p[64]; snprintf(p, sizeof p, "screenshot_%u.png",
+                                             (unsigned)SDL_GetTicks());
+                        save_screenshot(p);
+                    }
+                    handle_key(k, 1);
+                }
+                if (ev.type == SDL_KEYUP) handle_key(ev.key.keysym.sym, 0);
+            }
+            /* --speed N: present (vsync-wait) once per N frames; drop skipped audio */
+            static int speed_ctr = 0;
+            int show = (++speed_ctr >= g_speed);
+            if (show) speed_ctr = 0;
+            if (show)
+                for (int s = 0; s < apu.sample_count; s++) audio_push(apu.sample_buf[s]);
+            apu.sample_count = 0;
+            if (show) {
+                SDL_UpdateTexture(texture, NULL, ppu.framebuf, SCREEN_W * 4);
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, texture, NULL, NULL);
+                SDL_RenderPresent(renderer);
+            }
+        }
+
         /* ---- vblank, then pre-render (clear status, restore vertical v) ---- */
         fceux_run_to(261 * SL + 1);
         ppu.regs[2] &= ~0xE0;
@@ -692,6 +729,8 @@ static void runner_run_fceux(void) {
         ppu.frame_odd ^= 1;
         g_fceux_dot -= frame_dots;         /* carry the instruction overshoot */
     }
+    /* --screenshot is saved by runner_quit() after we return (framebuf holds the
+     * last rendered frame), same as the beam path. */
 }
 
 void runner_run(void) {

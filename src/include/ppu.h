@@ -52,5 +52,6 @@ void    fceux_line_begin(int sl);   /* per visible scanline: copy_hori, render B
 void    fceux_line_end(int sl);     /* EndRL: CheckSpriteHit(272), inc_vert */
 void    fceux_prerender(void);      /* pre-render: copy_vert (set up line-0 v) */
 void    fceux_on_2002_read(void);   /* lazy LineUpdate at a $2002 read */
+void    fceux_render_line(int sl);  /* full-colour line render → framebuf (video) */
 
 #endif /* PPU_H */
