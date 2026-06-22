@@ -587,14 +587,17 @@ static void fceux_run_to(int target_dot) {
             stack_push((cpu.PC >> 8) & 0xFF); stack_push(cpu.PC & 0xFF);
             stack_push(get_P() & ~0x10); cpu.I = 1;
             cpu.PC = mem_read(0xFFFA) | ((uint16_t)mem_read(0xFFFB) << 8);
-            g_fceux_dot += 7 * 3; continue;
+            /* NMI takes 7 CPU cycles; advance APU+dot clock like FCEUX ADDCYC(7) */
+            for (int i = 0; i < 7; i++) apu_step();
+            g_total_cpu_cycles += 7; g_fceux_dot += 7 * 3; continue;
         }
         if (g_irq_pending && !cpu.I) {
             g_irq_pending = 0;
             stack_push((cpu.PC >> 8) & 0xFF); stack_push(cpu.PC & 0xFF);
             stack_push(get_P() & ~0x10); cpu.I = 1;
             cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);
-            g_fceux_dot += 7 * 3; continue;
+            for (int i = 0; i < 7; i++) apu_step();
+            g_total_cpu_cycles += 7; g_fceux_dot += 7 * 3; continue;
         }
         g_ppu_catchup_dots = cpu_base_cycles[mem_read(cpu.PC)] * 3;
         g_cpu_cycles = 0;
@@ -603,6 +606,17 @@ static void fceux_run_to(int target_dot) {
         for (int i = 0; i < c; i++) apu_step();
         g_total_cpu_cycles += c;
         g_fceux_dot += c * 3;
+        /* Drain DMC DMA stalls (CPU halted ~4 cyc per sample fetch) into the dot
+         * budget, exactly like the beam loop. Without this the fceux backend runs
+         * too many CPU cycles/frame on DMC-heavy games, shifting the wait-for-IRQ
+         * RNG-churn count off FCEUX (e.g. Contraf $0029). */
+        { extern uint32_t g_dmc_stall;
+          if (g_dmc_stall) {
+            uint32_t s = g_dmc_stall; g_dmc_stall = 0;
+            for (uint32_t k = 0; k < s; k++) apu_step();
+            g_fceux_dot += s * 3;
+          }
+        }
         g_ppu_catchup_dots = 0;
         g_cpu_cycles = 0;
     }
@@ -617,9 +631,13 @@ static void runner_run_fceux(void) {
     g_fceux_dot = 0;
     while (g_running) {
         /* FCEUX old-PPU alternates the frame length 89342/89341 via `kook`
-         * (X6502_Run(16-kook); kook^=1) UNCONDITIONALLY every frame — not gated
-         * by rendering as the beam path does. Match that here. */
-        int frame_dots = 262 * SL - (ppu.frame_odd ? 1 : 0);
+         * (X6502_Run(16-kook); kook^=1) every NORMAL frame. Crucially, during the
+         * ppudead warm-up FCEUX runs the ppudead branch (full 89342, kook NOT
+         * toggled), so the odd/even phase only advances on non-ppudead frames.
+         * Toggling frame_odd during ppudead (as we did) put our dot-skip one frame
+         * out of phase with FCEUX → NMI ±1 dot on alternating frames → ±1 churn. */
+        int dead = (g_ppudead > 0);
+        int frame_dots = 262 * SL - ((!dead && ppu.frame_odd) ? 1 : 0);
         /* NB: do NOT reset g_fceux_dot to 0 each frame — the last instruction of
          * a frame overshoots frame_dots; FCEUX carries that remainder in _count
          * so the CPU/PPU phase drifts across frames exactly as on hardware. We
@@ -731,7 +749,7 @@ static void runner_run_fceux(void) {
         ppu.in_vblank = 0;
         fceux_run_to(frame_dots);
         fceux_prerender();                 /* copy_vert: set up line-0 v for next */
-        ppu.frame_odd ^= 1;
+        if (!dead) ppu.frame_odd ^= 1;     /* phase advances only on normal frames */
         g_fceux_dot -= frame_dots;         /* carry the instruction overshoot */
     }
     /* --screenshot is saved by runner_quit() after we return (framebuf holds the
