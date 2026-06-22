@@ -109,6 +109,11 @@ static uint32_t djb2_buf(const uint8_t *buf, size_t len) {
 #endif
 static int g_scale = DEFAULT_SCALE;
 
+/* --speed N: emulate N frames per displayed frame (frame-skip fast-forward).
+ * Display is vsync-paced, so presenting once per N emulated frames runs the
+ * emulation N× faster. Audio is dropped on skipped frames. 1 = normal speed. */
+static int g_speed = 1;
+
 /* Directory for save files — set from argv[0] in main() */
 static char g_sav_dir[520] = "sav";
 
@@ -1018,11 +1023,21 @@ void runner_run(void) {
             }
 
             if (!g_headless) {
-                for (int s = 0; s < apu.sample_count; s++) {
-                    audio_push(apu.sample_buf[s]);
-                }
-                apu.sample_count = 0;
+                /* --speed N: present (and so vsync-wait) only every Nth frame;
+                 * emulate the others as fast as possible. Drop skipped frames'
+                 * audio so the ring doesn't fill with sped-up sound. */
+                static int speed_ctr = 0;
+                int show = (++speed_ctr >= g_speed);
+                if (show) speed_ctr = 0;
 
+                if (show) {
+                    for (int s = 0; s < apu.sample_count; s++) {
+                        audio_push(apu.sample_buf[s]);
+                    }
+                }
+                apu.sample_count = 0;   /* always clear, even when skipping */
+
+                if (show) {
                 SDL_UpdateTexture(
                     texture,
                     NULL,
@@ -1075,6 +1090,7 @@ void runner_run(void) {
                     fps_counter = 0;
                     fps_timer = now;
                 }
+                }  /* if (show) */
             }
 
         }
@@ -1156,6 +1172,10 @@ int main(int argc, char **argv) {
             playback_path = argv[++i];
         else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc)
             g_scale = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
+            g_speed = atoi(argv[++i]);
+            if (g_speed < 1) g_speed = 1;
+        }
         else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
             g_screenshot_path = argv[++i];
         else if (strcmp(argv[i], "--interp") == 0)
