@@ -908,26 +908,33 @@ with near-zero drift just means many transient single-frame flips).
 
 After **hermetic-SRAM** + **unified FM2 timing** (record N applied at the
 START of frame N, like FCEUX) + **ppudead=1** + **odd-frame dot-skip** +
-**DMC steal** + **FCEUX-style PPU-register catch-up** (commit 437f989),
-full corpus (11 games, whole movie):
+**DMC steal** + **FCEUX-style PPU-register catch-up** (commit 437f989), and
+now the **`--interp=fceux` chunk-driven backend** (chunk-render, phase-carry,
+12-dot NMI delay, MMC3+MMC5 scanline IRQ) + the **$4016/$4017 open-bus fix**,
+full corpus (11 games, whole movie). Both backends vs the real-FCEUX ref;
+`tools/verify_all.sh` reproduces this (f2f / drift / 1stSustDiv per backend):
 
-| Game | Mapper | f2f match | **drift** | 1stSustDiv | verdict |
-|------|--------|-----------|-----------|-----------|---------|
-| Mario | NROM-256 | **100.0%** | **0** | None | bit-exact |
-| Battlecity | NROM-128 | **100.0%** | **0** | None | bit-exact |
-| Zelda | MMC1 | **100.0%** | **0** | None | bit-exact (was −16771!) |
-| Felix | MMC3 | **100.0%** | **0** | None | bit-exact |
-| Adventure | CNROM | 99.0% | +385 | None | in sync¹ (full 240k playthrough) |
-| Superc | MMC3 | 99.9% | −188 | None | in sync¹ (182k) |
-| Castle3 | MMC5 | 99.7% | −641 | None | in sync¹ (367k) |
-| Captain | MMC3 | 99.6% | −1634 | None | in sync¹ (713k) |
-| Mermaid | UNROM | 99.6% | −368 | None | in sync¹ (129k) |
-| Contraf | MMC3 | 69.7% | −50267 | **10581** | DESYNC² |
-| Battletoads | AxROM | 11.3% | +69199 | **5580** | DESYNC³ |
+| Game | Mapper | beam f2f | beam drift | beam Sust | fceux f2f | fceux drift | fceux Sust |
+|------|--------|----------|-----------|-----------|-----------|-------------|------------|
+| Mario | NROM-256 | **100.0%** | **0** | None | **100.0%** | **0** | None |
+| Battlecity | NROM-128 | **100.0%** | **0** | None | **100.0%** | **0** | None |
+| Zelda | MMC1 | **100.0%** | **0** | None | **100.0%** | **0** | None |
+| Felix | MMC3 | **100.0%** | **0** | None | **100.0%** | **0** | None |
+| Adventure | CNROM | 99.0% | +385 | None | 99.0% | +386 | None |
+| Superc | MMC3 | 99.9% | −188 | None | 99.8% | −102 | None |
+| Castle3 | MMC5 | 99.7% | −641 | None | 99.7% | −684 | None |
+| Captain | MMC3 | 99.6% | −1634 | None | 99.6% | −1634 | None |
+| Mermaid | UNROM | 99.6% | −368 | None | 99.5% | −99 | None |
+| Contraf | MMC3 | 69.7% | −50267 | **10581** | 69.8% | −50179 | **None** |
+| Battletoads | AxROM | 11.3% | +69199 | **5580** | 69.5% | +19217 | **5142** |
 
-**9/11 demos play through to the end** (`1stSustDiv=None`) — wide
-address-collection coverage across mappers 0,1,2,3,4,5,7. Only 2 demos
-desync.
+**Beam: 9/11 play through** (`1stSustDiv=None`); Contraf @10581 and
+Battletoads @5580 desync. **fceux backend: 10/11 play through** — it fixes
+**Contraf** (10581 → None) and cuts Battletoads' drift −72%; only
+**Battletoads** still hard-desyncs (5142). Wide address-collection coverage
+across mappers 0,1,2,3,4,5,7. The two timing-churned-RNG residuals
+(Battletoads `$25-$27`, Contraf `$0029`) need cycle-perfect interrupt timing,
+not a feature — see footnotes.
 
 ¹ Near-100% group: old-PPU (**NewPPU 0**) sub-cycle jitter / heavy-scene
   slowdown FCEUX models and we don't — `drift` accumulates but **no
