@@ -22,9 +22,11 @@
 #   DETAIL=1  tools/verify_all.sh ...   # force per-game detail block
 #
 # Columns (per backend): lag%=frame-to-frame lag agreement vs FCEUX; drift=
-# cumulative (ours-fceux) lag; Sust=first frame of a sustained desync (>150/200),
-# None=plays through. The real-FCEUX side is the reference (100%/0/None), so it is
-# the baseline, not a column.
+# cumulative (ours-fceux) lag; verdict=ok if the demo plays through, else
+# DESYNC@frame. Verdict is by DRIFT RATE (|drift|/n): synced demos stay tiny
+# (<=0.003), real desyncs jump to >=0.24. (The old 1stSustDiv >150/200 metric
+# missed soft desyncs like Contraf, whose RNG-churn diverges gameplay while the
+# lag flips stay under threshold.) Real-FCEUX is the reference (not a column).
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -116,15 +118,28 @@ def load(p):
         if len(q)>=4: L.append((int(q[1]), q[3].upper()))
     return L
 def stats(o,f):
+    # Verdict by DRIFT RATE = |cumulative (ours-fceux) lag| / n. This is the
+    # honest "does the demo play through" signal: synced demos stay <=0.003
+    # (slow old-PPU jitter), real desyncs jump to >=0.24. The old 1stSustDiv
+    # (>150/200 lag mismatch) MISSES soft desyncs — e.g. Contraf's RNG churn
+    # diverges the gameplay but the lag flips stay just under the threshold, so
+    # it falsely read "None". Onset (cum drift first crossing ±50 in the final
+    # direction) is reported only for flagged demos so slow-jitter games don't
+    # get a bogus frame number.
     n=min(len(o),len(f))
     if n==0: return None
     match=sum(1 for i in range(n) if o[i][0]==f[i][0])
     drift=sum(o[i][0]-f[i][0] for i in range(n))
-    sust=None
-    for i in range(n-200):
-        if sum(1 for j in range(i,i+200) if o[j][0]!=f[j][0])>150:
-            sust=i+1; break
-    return (n, 100.0*match/n, drift, sust)
+    rate=abs(drift)/n
+    desync = rate > 0.02
+    onset=None
+    if desync:
+        sign=1 if drift>0 else -1; cd=0
+        for i in range(n):
+            cd+=o[i][0]-f[i][0]
+            if sign*cd>=50: onset=i+1; break
+    verdict = (f"DESYNC@{onset}" if onset is not None else "DESYNC") if desync else "ok"
+    return (n, 100.0*match/n, drift, verdict)
 g=os.environ["GAME"]
 f=load(os.environ["REF"]); b=load(os.environ["BEAM"]); x=load(os.environ["FCX"])
 sb=stats(b,f); sx=stats(x,f)
@@ -132,9 +147,9 @@ if sb is None and sx is None:
     print(f"{g:<12} (empty)"); raise SystemExit
 n = (sb or sx)[0]
 def fmt(s):
-    if s is None: return f"{'--':>6} {'--':>8} {'--':>6}"
-    _,lm,d,su = s
-    return f"{lm:5.1f}% {d:+8d} {str(su):>6}"
+    if s is None: return f"{'--':>6} {'--':>8} {'--':>12}"
+    _,lm,d,vd = s
+    return f"{lm:5.1f}% {d:+8d} {vd:>12}"
 print(f"{g:<12} {n:7d}  | {fmt(sb)} | {fmt(sx)}")
 PY
 )"
@@ -173,8 +188,8 @@ done
 # real-fceux is 100%/0/None by definition and not shown as a column).
 # Each backend block: lagMatch% | drift (ours-fceux) | 1stSustDiv (None=plays through).
 echo
-printf '%-12s %7s  | %-22s | %-22s\n' GAME n 'our beam (vs fceux)' 'our fceux (vs fceux)'
-printf '%-12s %7s  | %6s %8s %6s | %6s %8s %6s\n' '' '' lag% drift Sust lag% drift Sust
-printf '%.0s-' {1..70}; echo
+printf '%-12s %7s  | %-28s | %-28s\n' GAME n 'our beam (vs fceux)' 'our fceux (vs fceux)'
+printf '%-12s %7s  | %6s %8s %12s | %6s %8s %12s\n' '' '' lag% drift verdict lag% drift verdict
+printf '%.0s-' {1..82}; echo
 for r in "${rows[@]}"; do echo "$r"; done
 for d in "${details[@]+"${details[@]}"}"; do echo "$d"; done

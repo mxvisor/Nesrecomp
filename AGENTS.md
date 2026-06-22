@@ -912,29 +912,35 @@ START of frame N, like FCEUX) + **ppudead=1** + **odd-frame dot-skip** +
 now the **`--interp=fceux` chunk-driven backend** (chunk-render, phase-carry,
 12-dot NMI delay, MMC3+MMC5 scanline IRQ) + the **$4016/$4017 open-bus fix**,
 full corpus (11 games, whole movie). Both backends vs the real-FCEUX ref;
-`tools/verify_all.sh` reproduces this (f2f / drift / 1stSustDiv per backend):
+`tools/verify_all.sh` reproduces this. **Verdict is by drift RATE** (|drift|/n):
+synced demos stay ≤0.003, real desyncs jump to ≥0.24. (The old `1stSustDiv`
+>150/200 lag-mismatch metric was MISLEADING — it read Contraf-fceux as "None"
+even though the demo visibly desyncs at the same place as beam; the lag flips
+just stay under threshold. Drift rate / final drift is the honest signal.)
 
-| Game | Mapper | beam f2f | beam drift | beam Sust | fceux f2f | fceux drift | fceux Sust |
-|------|--------|----------|-----------|-----------|-----------|-------------|------------|
-| Mario | NROM-256 | **100.0%** | **0** | None | **100.0%** | **0** | None |
-| Battlecity | NROM-128 | **100.0%** | **0** | None | **100.0%** | **0** | None |
-| Zelda | MMC1 | **100.0%** | **0** | None | **100.0%** | **0** | None |
-| Felix | MMC3 | **100.0%** | **0** | None | **100.0%** | **0** | None |
-| Adventure | CNROM | 99.0% | +385 | None | 99.0% | +386 | None |
-| Superc | MMC3 | 99.9% | −188 | None | 99.8% | −102 | None |
-| Castle3 | MMC5 | 99.7% | −641 | None | 99.7% | −684 | None |
-| Captain | MMC3 | 99.6% | −1634 | None | 99.6% | −1634 | None |
-| Mermaid | UNROM | 99.6% | −368 | None | 99.5% | −99 | None |
-| Contraf | MMC3 | 69.7% | −50267 | **10581** | 69.8% | −50179 | **None** |
-| Battletoads | AxROM | 11.3% | +69199 | **5580** | 69.5% | +19217 | **5142** |
+| Game | Mapper | beam drift | beam | fceux drift | fceux |
+|------|--------|-----------|------|-------------|-------|
+| Mario | NROM-256 | **0** | ok | **0** | ok |
+| Battlecity | NROM-128 | **0** | ok | **0** | ok |
+| Zelda | MMC1 | **0** | ok | **0** | ok |
+| Felix | MMC3 | **0** | ok | **0** | ok |
+| Adventure | CNROM | +385 | ok | +386 | ok |
+| Superc | MMC3 | −188 | ok | −102 | ok |
+| Castle3 | MMC5 | −641 | ok | −684 | ok |
+| Captain | MMC3 | −1634 | ok | −1634 | ok |
+| Mermaid | UNROM | −368 | ok | −99 | ok |
+| Contraf | MMC3 | −50267 | **DESYNC@~12k** | −50179 | **DESYNC@~13k** |
+| Battletoads | AxROM | +69199 | **DESYNC@~5.7k** | +19217 | **DESYNC@~6.2k** |
 
-**Beam: 9/11 play through** (`1stSustDiv=None`); Contraf @10581 and
-Battletoads @5580 desync. **fceux backend: 10/11 play through** — it fixes
-**Contraf** (10581 → None) and cuts Battletoads' drift −72%; only
-**Battletoads** still hard-desyncs (5142). Wide address-collection coverage
-across mappers 0,1,2,3,4,5,7. The two timing-churned-RNG residuals
-(Battletoads `$25-$27`, Contraf `$0029`) need cycle-perfect interrupt timing,
-not a feature — see footnotes.
+**9/11 demos play through in BOTH backends.** The two desyncs — **Contraf**
+and **Battletoads** — fail in **both** beam and fceux at essentially the same
+place (Contraf ~11–13k, Battletoads ~5–6k). Both are **timing-churned RNG**
+(Battletoads `$25-$27`, Contraf `$0029`): a wait-for-interrupt accumulator whose
+value depends on the exact CPU cycle the NMI/IRQ fires; neither backend is
+cycle-perfect there. **The fceux backend does NOT make these play through** — its
+real wins are: Castle3 (MMC5) & Felix (MMC3) become bit-exact, and Battletoads'
+drift is cut −72% (0.887→0.246) — but the RNG residual remains. Wide
+address-collection coverage across mappers 0,1,2,3,4,5,7. See footnotes.
 
 ¹ Near-100% group: old-PPU (**NewPPU 0**) sub-cycle jitter / heavy-scene
   slowdown FCEUX models and we don't — `drift` accumulates but **no
@@ -950,16 +956,19 @@ not a feature — see footnotes.
   Hardware/FCEUX-correct; **no regression** (Mario/Battlecity/Felix/Zelda beam
   byte-identical; only Superc/Castle3 RAM hashes shift, and those never matched
   FCEUX anyway — same engine, same churn).
-  (b) **Timing-churned RNG** — `$0029` is an entropy accumulator churned by an
-  infinite wait loop `$FD62: LDA $29; ADC $23; STA $29; JMP $FD62` (CLI'd, broken
-  only by NMI/IRQ). Its per-frame value depends on the exact CPU cycles until the
-  next interrupt — same precision class as Battletoads' RNG churn, **not** copy
-  protection. Still diverges (RAM never bit-matches), so Contraf stays ~70%
-  lagMatch, but with the fceux MMC3 IRQ (below) it no longer *sustained*-desyncs:
-  **`--interp=fceux` Contraf 1stSustDiv 10581 → None.**
-³ **Battletoads** (AxROM) desyncs at 5580 — the residual is FCEUX's lazy
-  sprite-0-hit visibility (see AxROM section); needs the optional
-  `--interp=fceux` mode. Startup + copy protection are in sync.
+  (b) **Timing-churned RNG (the real blocker, NOT fixed)** — `$0029` is an entropy
+  accumulator churned by an infinite wait loop `$FD62: LDA $29; ADC $23; STA $29;
+  JMP $FD62` (CLI'd, broken only by NMI/IRQ). Its per-frame value depends on the
+  exact CPU cycle the interrupt fires — same precision class as Battletoads' RNG
+  churn, **not** copy protection. `$0029` diverges from frame ~5 and RAM never
+  bit-matches again, so the **gameplay desyncs at ~11–13k in BOTH backends**
+  (verified visually). The controller-open-bus fix + MMC3 IRQ only nudged the lag
+  flips under the old `1stSustDiv` threshold (false "None"); the honest drift-rate
+  metric (0.296 in both) and the visual desync agree it does NOT play through.
+³ **Battletoads** (AxROM) desyncs at ~5–6k in **both** backends — timing-churned
+  RNG `$25-$27` (wait-for-NMI churn `$8743`, off-by-one at the copy-protection
+  bank-switching NMI handler, frame 15). The fceux backend cuts the drift −72%
+  (rate 0.887→0.246) but does not close it. Startup + copy protection are in sync.
 
 **Key takeaways:**
 - The lag metric is the demo-sync verdict (the framebuffer accuracy table
