@@ -630,10 +630,17 @@ static void runner_run_fceux(void) {
          * resets, counts per rendered visible line via mapper_scanline. */
         if (mapper.id == 5) { mapper.m5_in_frame = 1; mapper.m5_scanline = 0; }
 
+        /* --speed N (live window): present 1 of every N frames. Decide up front so
+         * we can skip the line render on the (N-1) frames that won't be shown. */
+        static int speed_ctr = 0;
+        int show = 1;
+        if (!g_headless) { show = (++speed_ctr >= g_speed); if (show) speed_ctr = 0; }
+        int render = want_video && (g_headless || show);
+
         /* ---- visible scanlines 0..239: DoLine structure ---- */
         for (int sl = 0; sl < 240; sl++) {
             fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
-            if (want_video) fceux_render_line(sl);  /* full-colour line → framebuf */
+            if (render) fceux_render_line(sl);  /* full-colour line → framebuf */
             fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
             fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
             /* Scanline IRQ clock. MMC3 (GameHBIRQHook): FCEUX DoLine fires it at
@@ -705,10 +712,8 @@ static void runner_run_fceux(void) {
                 }
                 if (ev.type == SDL_KEYUP) handle_key(ev.key.keysym.sym, 0);
             }
-            /* --speed N: present (vsync-wait) once per N frames; drop skipped audio */
-            static int speed_ctr = 0;
-            int show = (++speed_ctr >= g_speed);
-            if (show) speed_ctr = 0;
+            /* --speed N: present (vsync-wait) only on shown frames (decided at the
+             * top of the frame); drop the skipped frames' audio. */
             if (show)
                 for (int s = 0; s < apu.sample_count; s++) audio_push(apu.sample_buf[s]);
             apu.sample_count = 0;

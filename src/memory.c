@@ -80,41 +80,7 @@ uint8_t mem_read(uint16_t addr) {
    ========================================================================= */
 void mem_write(uint16_t addr, uint8_t val) {
     if (addr < 0x2000) {
-        uint16_t eff = addr & 0x07FF;
-        /* Trace writes to the NMI redirect pointer ($0023/$0024) */
-        if (eff == 0x23 || eff == 0x24) {
-            uint8_t old = ram[eff];
-            if (old != val)
-                fprintf(stderr, "[ram] $%04X=%02X->%02X at PC=$%04X bank=%d\n",
-                        eff, old, val, cpu.PC, mapper.m1_prg_bank);
-        }
-        /* Trace $30 writes (key variable for level init path) */
-        if (eff == 0x30) {
-            uint8_t old = ram[eff];
-            if (old != val) {
-                //fprintf(stderr, "[ram30] $30=%02X->%02X at PC=$%04X bank=%d\n",
-                //        old, val, cpu.PC, mapper.m1_prg_bank);
-                (void)old;
-            }
-        }
-        /* Trace $001F/$0020 state machine pointer */
-        //if (eff == 0x1F || eff == 0x20) {
-        //    uint8_t old = ram[eff];
-        //    if (old != val)
-        //        fprintf(stderr, "[sm1F] $%02X=%02X->%02X at PC=$%04X bank=%d (ptr=$%02X%02X)\n",
-        //                eff, old, val, cpu.PC, mapper.m1_prg_bank,
-        //                eff==0x1F ? val : ram[0x20],
-        //                eff==0x20 ? val : ram[0x1F]);
-        //}
-        /* Trace $09 (PPUCTRL shadow) bit7 (NMI enable) changes */
-        //if (eff == 0x09) {
-        //    uint8_t old = ram[eff];
-        //    if ((old ^ val) & 0x80)
-        //        fprintf(stderr, "[ppuctrl_shadow] $09 NMI %s at PC=$%04X bank=%d (ppu.regs[0]=$%02X)\n",
-        //                (val & 0x80) ? "ENABLE" : "DISABLE",
-        //                cpu.PC, mapper.m1_prg_bank, ppu.regs[0]);
-        //}
-        ram[eff] = val;
+        ram[addr & 0x07FF] = val;
         return;
     }
     if (addr < 0x4000) { ppu_write((uint8_t)(addr & 7), val); return; }

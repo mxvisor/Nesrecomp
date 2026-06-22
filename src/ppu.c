@@ -99,10 +99,6 @@ static void vram_write(uint16_t addr, uint8_t val) {
     if (addr < 0x3F00) {
         if (mapper.id == 5) { mmc5_nt_write(addr, val); return; }
         uint16_t offs = mirror_nt(addr - 0x2000);
-        /* Trace all page-1 NT writes (offsets $400-$7FF) when mirroring=4 */
-        if (mapper.mirroring == 4 && offs >= 0x400 && offs < 0x800)
-            fprintf(stderr, "[nt1] write $%02X offs=$%03X scan=%d mir=%d\n",
-                    val, offs, ppu.scanline, mapper.mirroring);
         ppu.vram[offs] = val; return;
     }
     addr &= 0x1F;
