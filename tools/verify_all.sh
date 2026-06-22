@@ -5,12 +5,14 @@
 #   1. ROM check: the FM2's romChecksum must match rom/GAME.nes (PRG+CHR, i.e.
 #      the ROM minus its 16-byte iNES header / 512-byte trainer). On mismatch the
 #      demo is for a different ROM → skipped (running it would desync from frame 1).
-#   2. Our side: run the FM2 through the interpreter (--dump-sync → lags/GAME.ours.txt).
+#   2. Our side: run the FM2 through BOTH backends —
+#        --interp        (beam-accurate)  → lags/GAME.ours.txt
+#        --interp=fceux  (FCEUX-faithful) → lags/GAME.ours_fceux.txt
 #   3. FCEUX reference (lags/GAME.fceux.txt): regenerated via FCEUX when MISSING
 #      or when the FM2 changed (tracked by lags/GAME.fm2.md5); otherwise reused
 #      without launching FCEUX. So replacing a demo is picked up automatically.
-#   4. Compare and print a summary table; for a single game also a divergence
-#      detail block.
+#   4. Compare BOTH backends against the real-FCEUX reference and print a summary
+#      table (one block per backend); for a single game also a detail block.
 #
 # Usage:
 #   tools/verify_all.sh                 # every game with fm2/GAME.fm2
@@ -19,10 +21,10 @@
 #   FCEUX=0   tools/verify_all.sh       # never launch FCEUX (cached refs only)
 #   DETAIL=1  tools/verify_all.sh ...   # force per-game detail block
 #
-# Columns: n=frames; lagMatch%=frame-to-frame lag agreement; drift=cumulative
-# (ours-fceux) lag; 1stSustDiv=first frame of a sustained desync (>150/200),
-# None=plays through; 1stRAMdiv=first $0000-$07FF djb2 mismatch (phase-sensitive,
-# a non-None can be a benign boot/counter offset).
+# Columns (per backend): lag%=frame-to-frame lag agreement vs FCEUX; drift=
+# cumulative (ours-fceux) lag; Sust=first frame of a sustained desync (>150/200),
+# None=plays through. The real-FCEUX side is the reference (100%/0/None), so it is
+# the baseline, not a column.
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -52,7 +54,8 @@ rows=(); details=()
 for g in "${GAMES[@]}"; do
     printf '[verify] %-12s ' "$g" >&2
     fm2="fm2/$g.fm2"; rom="rom/$g.nes"
-    ref="$LAGDIR/$g.fceux.txt"; ours="$LAGDIR/$g.ours.txt"; md5f="$LAGDIR/$g.fm2.md5"
+    ref="$LAGDIR/$g.fceux.txt"; ours="$LAGDIR/$g.ours.txt"
+    ours_f="$LAGDIR/$g.ours_fceux.txt"; md5f="$LAGDIR/$g.fm2.md5"
     [ -e "$fm2" ] || { rows+=("$(printf '%-13s  (no %s)' "$g" "$fm2")"); echo skip >&2; continue; }
     max="$(grep -c '^|' "$fm2")"
 
@@ -73,8 +76,10 @@ for g in "${GAMES[@]}"; do
         fi
     fi
     [ -x "bin/$g" ] || { rows+=("$(printf '%-13s  (no bin/%s)' "$g" "$g")"); echo skip >&2; continue; }
-    printf 'run ' >&2
-    ./bin/"$g" --headless --interp --playback "$fm2" --frames "$max" --dump-sync "$ours" >/dev/null 2>&1
+    printf 'run(beam) ' >&2
+    ./bin/"$g" --headless --interp        --playback "$fm2" --frames "$max" --dump-sync "$ours"   >/dev/null 2>&1
+    printf 'run(fceux) ' >&2
+    ./bin/"$g" --headless --interp=fceux  --playback "$fm2" --frames "$max" --dump-sync "$ours_f" >/dev/null 2>&1
 
     # ---- 3. FCEUX reference: regenerate if missing or FM2 changed (md5 sidecar) ----
     cur="$(md5sum "$fm2" | cut -d' ' -f1)"
@@ -99,57 +104,64 @@ for g in "${GAMES[@]}"; do
     fi
     echo "$cur" > "$md5f"   # ref valid for this fm2 (just generated, or adopted)
 
-    # ---- 4. compare ----
-    row="$(GAME="$g" OURS="$ours" REF="$ref" python3 - <<'PY'
+    # ---- 4. compare both backends vs the FCEUX reference ----
+    row="$(GAME="$g" BEAM="$ours" FCX="$ours_f" REF="$ref" python3 - <<'PY'
 import os
 def load(p):
     L=[]
-    for ln in open(p):
+    try: fh=open(p)
+    except OSError: return L
+    for ln in fh:
         q=ln.split()
         if len(q)>=4: L.append((int(q[1]), q[3].upper()))
     return L
+def stats(o,f):
+    n=min(len(o),len(f))
+    if n==0: return None
+    match=sum(1 for i in range(n) if o[i][0]==f[i][0])
+    drift=sum(o[i][0]-f[i][0] for i in range(n))
+    sust=None
+    for i in range(n-200):
+        if sum(1 for j in range(i,i+200) if o[j][0]!=f[j][0])>150:
+            sust=i+1; break
+    return (n, 100.0*match/n, drift, sust)
 g=os.environ["GAME"]
-o=load(os.environ["OURS"]); f=load(os.environ["REF"])
-n=min(len(o),len(f))
-if n==0:
-    print(f"{g:<13}  (empty: ours={len(o)} ref={len(f)})"); raise SystemExit
-match=sum(1 for i in range(n) if o[i][0]==f[i][0])
-drift=sum(o[i][0]-f[i][0] for i in range(n))
-sust=None
-for i in range(n-200):
-    if sum(1 for j in range(i,i+200) if o[j][0]!=f[j][0])>150:
-        sust=i+1; break
-rdiv=next((i+1 for i in range(n) if o[i][1]!=f[i][1]), None)
-flag="" if (sust is None and 100*match/n>=99.0) else ("  *** DESYNC" if sust is not None else "  <-- check")
-print(f"{g:<13} {n:8d} {100*match/n:8.1f}% {drift:+8d} {str(sust):>12} {str(rdiv):>11}{flag}")
+f=load(os.environ["REF"]); b=load(os.environ["BEAM"]); x=load(os.environ["FCX"])
+sb=stats(b,f); sx=stats(x,f)
+if sb is None and sx is None:
+    print(f"{g:<12} (empty)"); raise SystemExit
+n = (sb or sx)[0]
+def fmt(s):
+    if s is None: return f"{'--':>6} {'--':>8} {'--':>6}"
+    _,lm,d,su = s
+    return f"{lm:5.1f}% {d:+8d} {str(su):>6}"
+print(f"{g:<12} {n:7d}  | {fmt(sb)} | {fmt(sx)}")
 PY
 )"
     rows+=("$row"); echo ok >&2
 
     if [ "$DETAIL" = 1 ]; then
-        det="$(GAME="$g" OURS="$ours" REF="$ref" python3 - <<'PY'
+        det="$(GAME="$g" BEAM="$ours" FCX="$ours_f" REF="$ref" python3 - <<'PY'
 import os
 def load(p):
     L=[]
-    for ln in open(p):
+    try: fh=open(p)
+    except OSError: return L
+    for ln in fh:
         q=ln.split()
         if len(q)>=4: L.append((int(q[1]), q[3].upper()))
     return L
-g=os.environ["GAME"]
-o=load(os.environ["OURS"]); f=load(os.environ["REF"])
-n=min(len(o),len(f))
-first=next((i for i in range(n) if o[i][0]!=f[i][0]), None)
-print(f"\n--- {g}: detail ---")
-if first is None:
-    print("  lag sequences match frame-to-frame end-to-end")
+g=os.environ["GAME"]; f=load(os.environ["REF"])
+print(f"\n--- {g}: detail (vs real FCEUX) ---")
+for label,p in (("our beam",os.environ["BEAM"]),("our fceux",os.environ["FCX"])):
+    o=load(p); n=min(len(o),len(f))
+    if n==0: print(f"  {label}: (no data)"); continue
+    first=next((i for i in range(n) if o[i][0]!=f[i][0]), None)
     rm=sum(1 for i in range(n) if o[i][1]==f[i][1])
-    print(f"  RAM djb2 match: {rm}/{n} ({100*rm/n:.2f}%)")
-    raise SystemExit
-print(f"  first lag divergence at frame {first+1}")
-print("   frame  ourLag fceuxLag   ourRAM     fceuxRAM")
-for i in range(max(0,first-1), min(n, first+9)):
-    mark=">>" if i==first else "  "
-    print(f"  {mark}{i+1:6d}   {o[i][0]:5d} {f[i][0]:7d}   {o[i][1]} {f[i][1]}")
+    if first is None:
+        print(f"  {label}: lag matches end-to-end; RAM djb2 {rm}/{n} ({100*rm/n:.2f}%)")
+    else:
+        print(f"  {label}: first lag divergence at frame {first+1}; RAM djb2 {100*rm/n:.2f}%")
 PY
 )"
         details+=("$det")
@@ -157,8 +169,12 @@ PY
 done
 
 # ---- summary table ----
+# Both our backends compared against the real FCEUX reference (the baseline, so
+# real-fceux is 100%/0/None by definition and not shown as a column).
+# Each backend block: lagMatch% | drift (ours-fceux) | 1stSustDiv (None=plays through).
 echo
-printf '%-13s %8s %9s %8s %12s %11s\n' GAME n lagMatch% drift 1stSustDiv 1stRAMdiv
-printf '%.0s-' {1..72}; echo
+printf '%-12s %7s  | %-22s | %-22s\n' GAME n 'our beam (vs fceux)' 'our fceux (vs fceux)'
+printf '%-12s %7s  | %6s %8s %6s | %6s %8s %6s\n' '' '' lag% drift Sust lag% drift Sust
+printf '%.0s-' {1..70}; echo
 for r in "${rows[@]}"; do echo "$r"; done
 for d in "${details[@]+"${details[@]}"}"; do echo "$d"; done
