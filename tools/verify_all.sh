@@ -77,7 +77,7 @@ for g in "${GAMES[@]}"; do
     fi
     [ -x "bin/$g" ] || { rows+=("$(printf '%-13s  (no bin/%s)' "$g" "$g")"); echo skip >&2; continue; }
     printf 'run(beam) ' >&2
-    ./bin/"$g" --headless --interp        --playback "$fm2" --frames "$max" --dump-sync "$ours"   >/dev/null 2>&1
+    ./bin/"$g" --headless --interp=beam   --playback "$fm2" --frames "$max" --dump-sync "$ours"   >/dev/null 2>&1
     printf 'run(fceux) ' >&2
     ./bin/"$g" --headless --interp=fceux  --playback "$fm2" --frames "$max" --dump-sync "$ours_f" >/dev/null 2>&1
 

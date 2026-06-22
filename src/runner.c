@@ -1178,7 +1178,11 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
             g_screenshot_path = argv[++i];
-        else if (strcmp(argv[i], "--interp") == 0)
+        else if (strcmp(argv[i], "--interp") == 0 ||
+                 strcmp(argv[i], "--interp=beam") == 0)
+            /* Beam-accurate interpreter (default backend). `--interp` and
+             * `--interp=beam` are equivalent; the explicit form mirrors
+             * `--interp=fceux` so the backend choice is symmetric. */
             g_interp_mode = 1;
         else if (strcmp(argv[i], "--interp=fceux") == 0) {
             /* FCEUX-faithful playback backend (see docs/interp-fceux-design.md).
