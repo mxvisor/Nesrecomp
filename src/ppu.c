@@ -517,6 +517,7 @@ static void fceux_render_bg_opacity(void) {
     for (int i = 0; i < 256; i++) fc_bgopac[i] = 0;
     if (!(ppu.regs[1] & 0x08)) return;                 /* BG disabled */
 
+    mapper.m5_bg_chr = 1;                               /* MMC5: select BG CHR banks */
     uint16_t v       = ppu.v_addr;
     uint16_t pt_base = (ppu.regs[0] & 0x10) ? 0x1000 : 0x0000;
     int      x       = 0;

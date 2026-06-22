@@ -616,17 +616,31 @@ static void runner_run_fceux(void) {
          * so the CPU/PPU phase drifts across frames exactly as on hardware. We
          * carry it by subtracting frame_dots at frame end (below). */
 
+        /* MMC5 in-frame state — beam sets these in ppu_step (which the chunk loop
+         * doesn't call): in-frame begins at the pre-render line, scanline counter
+         * resets, counts per rendered visible line via mapper_scanline. */
+        if (mapper.id == 5) { mapper.m5_in_frame = 1; mapper.m5_scanline = 0; }
+
         /* ---- visible scanlines 0..239: DoLine structure ---- */
         for (int sl = 0; sl < 240; sl++) {
             fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
             fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
             fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
-            /* MMC3 scanline IRQ (GameHBIRQHook): FCEUX DoLine fires it at
-             * X6502_Run(256)+6+4 = dot 266, when rendering and the two pattern
-             * tables aren't both in the upper half ((PPU[0]&0x38)!=0x18). */
-            if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
-                fceux_run_to(sl * SL + 266);
-                mapper_scanline();
+            /* Scanline IRQ clock. MMC3 (GameHBIRQHook): FCEUX DoLine fires it at
+             * X6502_Run(256)+6+4 = dot 266 when rendering and the two pattern
+             * tables aren't both in the upper half ((PPU[0]&0x38)!=0x18). MMC5:
+             * the in-frame line counter clocks every rendered scanline (beam uses
+             * dot 260), no PPUCTRL gate. */
+            if (mapper.id == 4) {
+                if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
+                    fceux_run_to(sl * SL + 266);
+                    mapper_scanline();
+                }
+            } else if (mapper.id == 5) {
+                if (ppu.regs[1] & 0x18) {
+                    fceux_run_to(sl * SL + 260);
+                    mapper_scanline();
+                }
             }
             fceux_run_to((sl + 1) * SL);   /* HBlank to next line start */
         }
@@ -640,6 +654,9 @@ static void runner_run_fceux(void) {
             ppu.regs[2] |= 0x80;
             ppu.in_vblank = 1;
         }
+        /* MMC5: end of frame — in-frame off, scanline counter reset (beam does
+         * this at scanline 241 dot 1). */
+        if (mapper.id == 5) { mapper.m5_in_frame = 0; mapper.m5_scanline = 0; }
         fceux_run_to(241 * SL + 12);
         if (g_ppudead == 0 && (ppu.regs[0] & 0x80)) nes_nmi();
 

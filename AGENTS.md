@@ -488,11 +488,17 @@ fires `mapper_scanline()` per visible scanline at dot 266 (FCEUX `DoLine`
 GameHBIRQHook = X6502_Run(256)+6+4) when rendering and `(PPU[0]&0x38)!=0x18`.
 Brings **Felix `--interp=fceux` 99.3% → 100%/drift 0** (bit-exact) and
 **Contraf 1stSustDiv 10581 → None** (Mermaid/Superc fceux drift also improved).
-**Limitation:** the fceux backend does NOT support **MMC5** — Castle3
-`--interp=fceux` is 2.9% (m5_in_frame / MMC5 PPU state is tracked in `ppu_step`,
-which the chunk loop doesn't call; the lazy render has no MMC5 ExRAM/split path).
-Beam Castle3 stays 99.7% — fceux is opt-in for demo verification, MMC5 unaffected
-on the default path. MMC5-in-fceux would be a separate port.
+
+**MMC5 added to the fceux backend (2026-06-22).** The chunk loop now manages the
+MMC5 in-frame state itself (beam does it in `ppu_step`, uncalled here): set
+`m5_in_frame=1`/`m5_scanline=0` before the visible scanlines, clock
+`mapper_scanline()` once per rendered visible line (beam dot 260, no PPUCTRL gate
+— distinct from the MMC3 dot-266 GameHBIRQHook path), and reset `m5_in_frame=0`
+at VBL. `fceux_render_bg_opacity` sets `m5_bg_chr=1` so MMC5 BG CHR banking is
+correct. **Castle3 `--interp=fceux` 2.9% → 99.7%/None** (matches beam 99.7%); no
+regression (Felix/Mario/Captain/Contraf fceux unchanged, Castle3 beam unchanged).
+The scanline-IRQ clock in `runner_run_fceux` is now mapper-aware (id==4 MMC3 vs
+id==5 MMC5).
 
 **Battletoads residual ROOT-CAUSED (2026-06-21) — copy-protection NMI cycle
 precision.** Traced byte-by-byte vs FCEUX RAM dumps: the only persistent RAM
