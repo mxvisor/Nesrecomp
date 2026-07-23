@@ -16,6 +16,7 @@
 - **Без зависимости от ROM во время выполнения** — данные PRG/CHR скомпилированы в бинарник
 - **Управление потоком на основе yield** — JMP, JSR, RTS, RTI, BRK и все ветвления устанавливают `cpu.PC` и делают `return`
 - **Режим обучения** — `RECOMP_LEARN=1` собирает промахи диспетчеризации в `.cfg`-файл для следующей рекомпиляции
+- **Точная проверка через FCEUX** — опциональная headless-сборка интерпретатора (`INTERP=1`, `--interp=fceux`) воспроизводит покадровый тайминг FCEUX для автоматического регрессионного тестирования на TAS-записях (см. *Проверка точности*)
 - **Универсальный Makefile** — один Makefile работает на Linux и Windows (MinGW), с поддержкой кросс-компиляции
 - **Бинарник для каждой игры** — `GAME=BattleCity` → `bin/BattleCity`
 - **Поддержка маперов** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
@@ -123,6 +124,20 @@ GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 
 На каждом кадре (`NMI`) состояние контроллера загружается из следующей строки FM2. Клавиатура игнорируется во время воспроизведения. Программа завершается, когда все кадры исчерпаны.
 
+## Проверка точности
+
+Сборка только с интерпретатором (`make GAME=MyGame INTERP=1`) содержит три headless-бэкенда для покадровой проверки тайминга против реального эмулятора:
+
+- `--interp` / `--interp=beam` — beam-точный интерпретатор (PPU по точкам)
+- `--interp=fceux` — воспроизведение в стиле FCEUX; повторяет покадровую модель lag/тайминга FCEUX и служит эталонным бэкендом для регрессионного тестирования
+- `--interp=fceux_vendor` — тот же цикл, но CPU управляется вендорным ядром FCEUX — потактово точный дифференциальный оракул (см. заметку про GPL ниже)
+
+`--dump-sync FILE` пишет покадровый лог `кадр  lag  lagcount  ram-hash` на границе каждого VBL. `tools/verify_all.sh` прогоняет каждый FM2 из `fm2/` через все бэкенды и сравнивает покадровый lag-флаг с эталонными дампами FCEUX из `lags/`. На всём тестовом корпусе бэкенд `--interp=fceux` воспроизводит тайминг lag FCEUX точно (100% покадрово, нулевой дрифт).
+
+### Вендорный оракул на GPL (опционально)
+
+`--interp=fceux_vendor` собирается из вендорных исходников FCEUX, которые распространяются под GPL. Чтобы этот репозиторий оставался свободным от GPL, эти четыре файла лежат в **игнорируемой git-ом директории `nogpl/`**, а не в `src/`. Makefile автоматически определяет `nogpl/` и, если она есть, компилирует оракул в сборку `INTERP=1` (`-DHAVE_VENDOR`). Без `nogpl/` сборка по умолчанию свободна от GPL, а `--interp=fceux_vendor` отключён с сообщением; на бэкенд `--interp=fceux` (без GPL) это не влияет.
+
 ## Управление
 
 ### Геймпад (Игрок 1)
@@ -154,10 +169,11 @@ GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 ```
 src/
   runner.c / include/runner.h   — SDL-цикл, ввод, звук, состояния сохранения
-  cpu_interp.c                  — интерпретатор 6502 (запасной вариант)
+  cpu_interp.c                  — интерпретатор 6502 (запасной вариант + бэкенды INTERP=1)
   fm2_player.c / include/fm2_player.h — воспроизведение FM2 TAS (файл или директория)
   ppu.c / include/ppu.h         — эмуляция PPU 2C02
   apu.c / include/apu.h         — эмуляция APU (прямоугольные, треугольный, шум, DMC)
+  apu_fceux.c                   — тайминг APU/DMC в стиле FCEUX для --interp=fceux
   mapper.c / include/mapper.h   — логика маперов (NROM, MMC1, UNROM, CNROM, MMC3, MMC5)
   memory.c                      — карта адресов CPU, ввод-вывод контроллеров
   include/                      — общие заголовки (cpu, ppu, apu, mapper, interrupts)
@@ -166,13 +182,16 @@ tools/
   nesrecomp.py          — статический рекомпилятор / discoverer / эмиттер C
   asm_parser.py         — парсер меток ca65 (посев BFS из ручного дизассемблирования)
   extract_rom_data.py   — ROM → встроенный C-заголовок/исходник
+  verify_all.sh         — прогон fm2/ через все бэкенды, сравнение lag с FCEUX
 
 generated/            — рекомпилированные C-файлы и встроенные данные ROM (авто-генерация)
+nogpl/                — вендорный оракул FCEUX (GPL) — игнорируется git; включает --interp=fceux_vendor при наличии
 
 rom/                  — NES ROM-файлы (.nes) — не отслеживаются git
 cfg/                  — конфиг дополнительных точек входа для каждой игры (вывод режима обучения)
 asm/                  — исходники ca65 для посева BFS по меткам — не отслеживаются git
 fm2/                  — TAS-файлы FCEUX для автоматизированного обнаружения — не отслеживаются git
+lags/                 — эталонные lag/sync-дампы FCEUX для verify_all.sh — не отслеживаются git
 docs/                 — справочная документация — не отслеживается git
 ```
 
@@ -182,11 +201,11 @@ docs/                 — справочная документация — не
 |----|----------|-----------------------------------------------------------------------------------------|
 | 0  | NROM     | Фиксированный PRG 16/32 КБ; полностью рекомпилируем                                    |
 | 1  | MMC1     | 16 КБ switchable + фиксированный последний; CHR-RAM; переключаемый банк через интерпретатор |
-| 2  | UNROM    | 16 КБ switchable + фиксированный последний; CHR фикс.; переключаемый банк через интерпретатор |
+| 2  | UNROM    | 16 КБ switchable + фиксированный последний; CHR фикс.; переключаемые банки рекомпилируются по-банково |
 | 3  | CNROM    | Фиксированный PRG; переключаемый CHR 8 КБ                                              |
 | 4  | MMC3     | Гранулярность PRG/CHR 8 КБ; scanline IRQ; переключаемые банки через интерпретатор      |
 | 5  | MMC5     | PRG mode 2, CHR 8×16, ExRAM; переключаемые банки через интерпретатор                   |
-| 7  | AxROM    | PRG 32 КБ switchable; CHR-RAM; one-screen mirroring; переключаемый банк через интерпретатор |
+| 7  | AxROM    | PRG 32 КБ switchable; CHR-RAM; one-screen mirroring; банки рекомпилируются по-банково |
 
 ### Протестированные игры
 
@@ -199,13 +218,13 @@ docs/                 — справочная документация — не
 | Adventure Island      | 3      | ✅     | ✅       | ✅       | CNROM, переключаемый CHR 32 КБ                  |
 | Felix the Cat         | 4      | ✅     | ✅       | ✅       | MMC3 scanline IRQ                               |
 | Castlevania III       | 5      | ✅     | ✅       | ✅       | MMC5 PRG mode 2; переключаемые банки через интерпретатор |
-| Battletoads           | 7      | ✅     | ✅       | ✅       | AxROM, 128 КБ PRG, CHR-RAM; все банки через интерпретатор |
+| Battletoads           | 7      | ✅     | ✅       | ✅       | AxROM, 128 КБ PRG, CHR-RAM; bank-aware рекомпиляция (диспетч по банкам) |
 
 ## Скриншоты
 
 | | | |
 |---|---|---|
-| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battle.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
+| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battlecity.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
 | Adventure Island | Battle City | Captain America and the Avengers |
 | ![Castlevania III](docs/assets/Castle3.png) | ![Contra Force](docs/assets/Contraf.png) | ![Felix the Cat](docs/assets/Felix.png) |
 | Castlevania III | Contra Force | Felix the Cat |

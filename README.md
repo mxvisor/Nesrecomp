@@ -16,6 +16,7 @@ Static recompilation of NES games to native C code. No interpreter hot loop — 
 - **No runtime ROM dependency** — PRG/CHR data compiled into the binary
 - **Yield-based control flow** — JMP, JSR, RTS, RTI, BRK, and all branches set `cpu.PC` and `return`
 - **Learning mode** — `RECOMP_LEARN=1` collects dispatch misses into a `.cfg` file for the next recompilation
+- **FCEUX-faithful verification** — an optional headless interpreter build (`INTERP=1`, `--interp=fceux`) reproduces FCEUX's per-frame timing for automated regression testing against TAS movies (see *Accuracy Verification*)
 - **Universal Makefile** — same Makefile works on Linux and Windows (MinGW), with cross-compile support
 - **Per-game binary** — `GAME=BattleCity` → `bin/BattleCity`
 - **Mapper support** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
@@ -123,6 +124,20 @@ GAME=MyGame ./bin/MyGame --headless --playback fm2/MyGame.fm2
 
 On each frame (`NMI`) the controller state is loaded from the next FM2 line. The keyboard is ignored during playback. The program exits when all frames are consumed.
 
+## Accuracy Verification
+
+An interpreter-only build (`make GAME=MyGame INTERP=1`) ships three headless backends used to verify timing against a real emulator, frame by frame:
+
+- `--interp` / `--interp=beam` — beam-accurate interpreter (per-dot PPU)
+- `--interp=fceux` — FCEUX-faithful playback; matches FCEUX's per-frame lag/timing model and is the reference backend for regression testing
+- `--interp=fceux_vendor` — the same loop driven by a vendored FCEUX CPU core, a cycle-exact differential oracle (see the GPL note below)
+
+`--dump-sync FILE` writes a per-frame `frame  lag  lagcount  ram-hash` log at each VBL boundary. `tools/verify_all.sh` replays every FM2 in `fm2/` through the backends and diffs the per-frame lag flag against FCEUX reference dumps in `lags/`. Across the whole test corpus the `--interp=fceux` backend reproduces FCEUX's lag timing exactly (100% frame-for-frame, zero drift).
+
+### GPL vendor oracle (optional)
+
+`--interp=fceux_vendor` is built from vendored FCEUX sources, which are GPL. To keep this repository GPL-free, those four files live in a **gitignored `nogpl/`** directory rather than in `src/`. The Makefile auto-detects `nogpl/` and, when present, compiles the oracle into the `INTERP=1` build (`-DHAVE_VENDOR`). Without `nogpl/`, the default build is GPL-free and `--interp=fceux_vendor` is disabled with a message; the non-GPL `--interp=fceux` backend is unaffected.
+
 ## Controls
 
 ### Gamepad (Player 1)
@@ -154,10 +169,11 @@ On each frame (`NMI`) the controller state is loaded from the next FM2 line. The
 ```
 src/
   runner.c / include/runner.h   — SDL loop, input, audio, save states
-  cpu_interp.c                  — 6502 interpreter (fallback)
+  cpu_interp.c                  — 6502 interpreter (fallback + INTERP=1 backends)
   fm2_player.c / include/fm2_player.h — FM2 TAS playback (file or directory)
   ppu.c / include/ppu.h         — PPU 2C02 emulation
   apu.c / include/apu.h         — APU emulation (pulse, triangle, noise, DMC)
+  apu_fceux.c                   — FCEUX-faithful APU/DMC timing for --interp=fceux
   mapper.c / include/mapper.h   — mapper logic (NROM, MMC1, UNROM, CNROM, MMC3, MMC5)
   memory.c                      — CPU address map, controller I/O
   include/                      — shared headers (cpu, ppu, apu, mapper, interrupts)
@@ -166,13 +182,16 @@ tools/
   nesrecomp.py          — static recompiler / discoverer / C emitter
   asm_parser.py         — ca65 label parser (seeds BFS from manual disassembly)
   extract_rom_data.py   — ROM parser → embedded C header/source
+  verify_all.sh         — replay fm2/ through every backend, diff lag vs FCEUX
 
 generated/            — per-game recompiled C files + embedded ROM data (auto-generated)
+nogpl/                — vendored FCEUX oracle (GPL) — gitignored; enables --interp=fceux_vendor when present
 
 rom/                  — NES ROM files (.nes) — not tracked by git
 cfg/                  — per-game extra entry point config (learning mode output)
 asm/                  — ca65 assembly sources for label-based BFS seeding — not tracked by git
 fm2/                  — FCEUX TAS movie files for automated discovery — not tracked by git
+lags/                 — FCEUX reference lag/sync dumps for verify_all.sh — not tracked by git
 docs/                 — reference documentation — not tracked by git
 ```
 
@@ -182,11 +201,11 @@ docs/                 — reference documentation — not tracked by git
 |----|-------|--------------------------------------------------------------------------------|
 | 0  | NROM  | Fixed 16/32 KB PRG; fully recompilable                                         |
 | 1  | MMC1  | 16 KB switchable + fixed last; CHR-RAM support; switchable bank via interpreter |
-| 2  | UNROM | 16 KB switchable + fixed last; CHR fixed; switchable bank via interpreter       |
+| 2  | UNROM | 16 KB switchable + fixed last; CHR fixed; switchable banks recompiled per-bank   |
 | 3  | CNROM | Fixed PRG; 8 KB switchable CHR                                                 |
 | 4  | MMC3  | 8 KB PRG/CHR granularity; scanline IRQ; switchable banks via interpreter        |
 | 5  | MMC5  | PRG mode 2, CHR 8×16, ExRAM; switchable banks via interpreter                  |
-| 7  | AxROM | 32 KB switchable PRG; CHR-RAM; single-screen mirroring; switchable bank via interpreter |
+| 7  | AxROM | 32 KB switchable PRG; CHR-RAM; single-screen mirroring; banks recompiled per-bank |
 
 ### Tested Games
 
@@ -199,13 +218,13 @@ docs/                 — reference documentation — not tracked by git
 | Adventure Island      | 3      | ✅    | ✅           | ✅       | CNROM, 32 KB CHR switchable        |
 | Felix the Cat         | 4      | ✅    | ✅           | ✅       | MMC3 scanline IRQ                  |
 | Castlevania III       | 5      | ✅    | ✅           | ✅       | MMC5 PRG mode 2; switchable banks via interpreter |
-| Battletoads           | 7      | ✅    | ✅           | ✅       | AxROM, 128 KB PRG, CHR-RAM; all banks via interpreter |
+| Battletoads           | 7      | ✅    | ✅           | ✅       | AxROM, 128 KB PRG, CHR-RAM; bank-aware recompilation (per-bank dispatch) |
 
 ## Screenshots
 
 | | | |
 |---|---|---|
-| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battle.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
+| ![Adventure Island](docs/assets/Adventure.png) | ![Battle City](docs/assets/Battlecity.png) | ![Captain America and the Avengers](docs/assets/Captain.png) |
 | Adventure Island | Battle City | Captain America and the Avengers |
 | ![Castlevania III](docs/assets/Castle3.png) | ![Contra Force](docs/assets/Contraf.png) | ![Felix the Cat](docs/assets/Felix.png) |
 | Castlevania III | Contra Force | Felix the Cat |
