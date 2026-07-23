@@ -63,6 +63,18 @@ endif
 
 OBJDIR  = build/$(PLATFORM)/$(GAME)
 
+# ============================================================
+#  GPL FCEUX vendor oracle (--interp=fceux_vendor)
+#  The vendored FCEUX core (GPL) lives in a gitignored nogpl/ dir so the tree
+#  builds & commits GPL-free. Auto-detected: present → compiled into the
+#  INTERP=1 build and -DHAVE_VENDOR enables the vendor CPU path + CLI flag in
+#  runner.c. Absent → default GPL-free build, --interp=fceux_vendor disabled.
+# ============================================================
+VENDOR_SRCS := $(wildcard nogpl/x6502_vendor.c nogpl/ppu_vendor.c nogpl/apu_vendor.c)
+ifneq ($(VENDOR_SRCS),)
+    CFLAGS += -DHAVE_VENDOR -Inogpl
+endif
+
 EMBED_SRC = generated/$(GAME)_embedded_data.c
 EMBED_HDR = generated/$(GAME)_embedded_data.h
 
@@ -71,6 +83,7 @@ RUNNER_SRCS = \
     src/cpu_interp.c \
     src/ppu.c \
     src/apu.c \
+    src/apu_fceux.c \
     src/mapper.c \
     src/fm2_player.c \
     src/runner.c
@@ -84,7 +97,7 @@ DISPATCH_SRC = generated/$(GAME)_dispatch.c
 # executed under --interp anyway, and for bank-aware games (e.g. Mermaid:
 # ~24500 functions) compiling the giant generated/_full.c with -O2 exhausts RAM.
 ifeq ($(INTERP),1)
-    GAME_SRCS = src/stub_full.c
+    GAME_SRCS = src/stub_full.c $(VENDOR_SRCS)
 else ifeq ($(wildcard $(DISPATCH_SRC)),)
     GAME_SRCS = $(FULL_SRC)
 else

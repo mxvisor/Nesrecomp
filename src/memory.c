@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "runner.h"
 
 /* =========================================================================
@@ -62,12 +63,28 @@ uint8_t mem_read(uint16_t addr) {
     /* PPU registers $2000-$3FFF (mirrored every 8 bytes) */
     if (addr < 0x4000) return ppu_read((uint8_t)(addr & 7));
     /* APU / IO $4000-$4017 */
-    if (addr == 0x4015) return apu_read_status();
+    if (addr == 0x4015) {
+        /* fceux backend: DMC/frame timing is owned by apu_fceux (cycle-identical
+         * to the vendor). Take bits 4 (DMC active), 6 (frame IRQ), 7 (DMC IRQ)
+         * from it; keep apu.c's length-counter bits 0-3. */
+        extern int g_ppu_backend;
+        if (g_ppu_backend) {
+            extern uint8_t apu_fceux_status(void);
+            uint8_t base = apu_read_status();
+            return (uint8_t)((base & 0x0F) | apu_fceux_status());
+        }
+        return apu_read_status();
+    }
     if (addr == 0x4016) return ctrl_read(0);
     if (addr == 0x4017) return ctrl_read(1);
     if (addr < 0x4020) return 0xFF; /* open bus */
     /* MMC5 registers / ExRAM $5000-$5FFF */
     if (addr >= 0x5000 && addr < 0x6000) return mapper5_read(addr);
+    /* AxROM (mapper 7) has NO PRG-RAM: $6000-$7FFF reads return open bus (the
+     * data-bus latch ≈ address high byte), not SRAM. Battletoads reads data
+     * tables through pointers that land here; FCEUX (ANROM, no WRAM) returns
+     * $7F for $7Fxx while our SRAM gave 00 → desync. */
+    if (mapper.id == 7 && addr >= 0x6000 && addr < 0x8000) return (uint8_t)(addr >> 8);
     /* SRAM $6000-$7FFF */
     if (addr >= 0x6000 && addr < 0x8000) return sram[addr - 0x6000];
     /* PRG-ROM $8000-$FFFF */
@@ -94,12 +111,26 @@ void mem_write(uint16_t addr, uint8_t val) {
             ppu.oam[i] = mem_read(base + i);
         //fprintf(stderr, "[oamdma] done, OAM[0]Y=%02X X=%02X tile=%02X\n",
         //        ppu.oam[0], ppu.oam[3], ppu.oam[1]);
-        /* DMA costs 513 or 514 CPU cycles depending on alignment */
-        g_cpu_cycles += 513;
+        /* OAM DMA halts the CPU. FCEUX charges exactly 512 (B4014: 256×
+         * (X6502_DMR+X6502_DMW), each ADDCYC(1)) on top of the 4-cycle STA store.
+         * We were charging 513 → +1 cyc per DMA vs FCEUX, which the timing-churned
+         * RNG (Contraf $0029) accumulates into a borderline lag flip. Use 512. */
+        g_cpu_cycles += 512;
         return;
     }
     if (addr == 0x4016) { ctrl_write(val); return; }
-    if (addr >= 0x4000 && addr <= 0x4017) { apu_write(addr, val); return; }
+    if (addr >= 0x4000 && addr <= 0x4017) {
+        apu_write(addr, val);                    /* apu.c: audio channels + DAC */
+        /* fceux backend: mirror the timing regs into apu_fceux (DMC/frame IRQ). */
+        { extern int g_ppu_backend; extern void apu_fceux_write(uint16_t, uint8_t);
+          if (g_ppu_backend) apu_fceux_write(addr, val); }
+        return;
+    }
+    /* AxROM (mapper 7) has no PRG-RAM: the bank latch responds to the whole
+     * $4020-$FFFF range (FCEUX ANROM Latch_Init 0x4020-0xFFFF), so writes below
+     * $8000 (e.g. Battletoads writes the bank via $6000-$7FFF) MUST switch the
+     * bank, not land in SRAM. Without this the active PRG bank silently diverges. */
+    if (mapper.id == 7 && addr >= 0x4020) { mapper_prg_write(addr, val); return; }
     /* MMC5 registers / ExRAM $5000-$5FFF */
     if (addr >= 0x5000 && addr < 0x6000) { mapper5_write(addr, val); return; }
     if (addr >= 0x6000 && addr < 0x8000) { sram[addr - 0x6000] = val; return; }

@@ -407,8 +407,13 @@ void apu_step(void) {
 
     /* DMC IRQ timing: count down CPU cycles until sample would finish playing.
        We don't do actual sample playback (no mem_read side-effects), but we
-       fire the IRQ at the correct time so games that use it as a timer work. */
-    if (apu.dmc.enabled && apu.dmc.bytes_remaining > 0 && apu.dmc.timer_reload > 0) {
+       fire the IRQ at the correct time so games that use it as a timer work.
+       On the --interp=fceux backend the DMC cycle-steal + IRQ are owned by
+       apu_fceux (per-instruction, cycle-identical to the vendor); skip this
+       per-cycle model there so the two don't double-charge g_dmc_stall/IRQ. */
+    extern int g_ppu_backend;
+    if (!g_ppu_backend &&
+        apu.dmc.enabled && apu.dmc.bytes_remaining > 0 && apu.dmc.timer_reload > 0) {
         if (apu.dmc.timer > 0) {
             apu.dmc.timer--;
         } else {

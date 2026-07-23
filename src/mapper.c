@@ -156,7 +156,15 @@ uint8_t mapper_prg_read(uint16_t addr) {
 /* =========================================================================
    PRG-ROM write (mapper registers)
    ========================================================================= */
+/* Set by the vendored PPU (ppu_vendor.c) so a mapper register write that changes
+ * nametable mirroring rebuilds vnapage IMMEDIATELY. AxROM (Battletoads) flips
+ * single-screen mirroring mid-frame; without this the vendor PPU keeps the
+ * frame-start mapping and $2007/render hit the wrong CIRAM page. Null in
+ * non-vendor builds (beam PPU re-reads mapper.mirroring per access). */
+void (*g_vnapage_dirty)(void) = 0;
+
 void mapper_prg_write(uint16_t addr, uint8_t val) {
+    uint8_t prev_mir = mapper.mirroring;
     switch (mapper.id) {
     case 0: /* NROM */
         break;
@@ -225,13 +233,14 @@ void mapper_prg_write(uint16_t addr, uint8_t val) {
 
     case 7: /* AxROM */
         {
-            uint8_t bank = val & 0x07;
+            uint8_t bank = val & 0x0F;   /* FCEUX ANROM: setprg32(latche & 0xF) */
             uint8_t mir  = (val & 0x10) ? 4 : 3;
             mapper.m1_prg_bank = bank;
             mapper.mirroring   = mir;
         }
         break;
     }
+    if (mapper.mirroring != prev_mir && g_vnapage_dirty) g_vnapage_dirty();
 }
 
 /* =========================================================================
@@ -241,9 +250,14 @@ uint8_t mapper5_read(uint16_t addr) {
     if (addr >= 0x5C00 && addr <= 0x5FFF)
         return mapper.m5_exram[addr - 0x5C00];
     if (addr == 0x5204) {
+        /* bit7 = latched IRQ-pending, bit6 = in-frame. Reading ACKs (clears
+         * pending + deasserts the IRQ line). The pending flag latches on the
+         * scanline match regardless of the enable bit (enable only gates the
+         * CPU IRQ line). */
         uint8_t v = (mapper.m5_in_frame ? 0x40 : 0) |
-                    (mapper.m5_irq_enable && mapper.m5_in_frame &&
-                     mapper.m5_scanline == mapper.m5_irq_line ? 0x80 : 0);
+                    (mapper.m5_irq_pending ? 0x80 : 0);
+        mapper.m5_irq_pending = 0;
+        g_irq_pending = 0;          /* acknowledge / deassert */
         return v;
     }
     if (addr == 0x5205) return (uint8_t)((mapper.m5_mul[0] * mapper.m5_mul[1]) & 0xFF);
@@ -288,8 +302,8 @@ void mapper5_write(uint16_t addr, uint8_t val) {
     case 0x512A: mapper.m5_chr_hi[2] = val; break;
     case 0x512B: mapper.m5_chr_hi[3] = val; break;
     case 0x5130: mapper.m5_chr_upper = val & 3; break;
-    case 0x5203: mapper.m5_irq_line = val; break;
-    case 0x5204: mapper.m5_irq_enable = (val >> 7) & 1; break;
+    case 0x5203: g_irq_pending = 0; mapper.m5_irq_line = val; break;   /* X6502_IRQEnd */
+    case 0x5204: g_irq_pending = 0; mapper.m5_irq_enable = (val >> 7) & 1; break;  /* X6502_IRQEnd */
     case 0x5205: mapper.m5_mul[0] = val; break;
     case 0x5206: mapper.m5_mul[1] = val; break;
     /* PRG writes in range $8000-$FFFF also handled here for completeness */
@@ -433,15 +447,35 @@ void mapper_chr_write(uint16_t addr, uint8_t val) {
 /* =========================================================================
    MMC3 Scanline IRQ
    ========================================================================= */
-void mapper_scanline(void) {
-    /* MMC5 in-frame scanline IRQ */
-    if (mapper.id == 5) {
-        mapper.m5_scanline++;
-        if (mapper.m5_in_frame && mapper.m5_scanline == mapper.m5_irq_line && mapper.m5_irq_enable)
-            nes_irq();
+/* MMC5 scanline hook — exact port of FCEUX mmc5.cpp MMC5_hb(scanline).
+ * Called at the START of each rendered scanline (dot 0), before the 256 render
+ * cycles — NOT at dot 266 like MMC3's GameHBIRQHook. `ppuon` = PPUMASK & 0x18. */
+void mapper5_hb(int scanline, int ppuon) {
+    int sl = scanline + 1;
+    if (!ppuon || sl >= 241) {
+        /* rendering off or vblank: reset in-frame + counter, deassert IRQ */
+        mapper.m5_in_frame = 0;
+        mapper.m5_irq_pending = 0;
+        mapper.m5_scanline = 0;
+        g_irq_pending = 0;
         return;
     }
+    if (!mapper.m5_in_frame) {
+        /* first rendered scanline: enter frame, counter starts at 0, no compare */
+        mapper.m5_in_frame = 1;
+        mapper.m5_irq_pending = 0;
+        mapper.m5_scanline = 0;
+        g_irq_pending = 0;
+    } else {
+        mapper.m5_scanline++;
+        if (mapper.m5_scanline == mapper.m5_irq_line) {
+            mapper.m5_irq_pending = 1;
+            if (mapper.m5_irq_enable) nes_irq();
+        }
+    }
+}
 
+void mapper_scanline(void) {
     if (mapper.id != 4) return;
 
     /* Called from ppu.c only when RENDER is active — no extra checks needed */
@@ -454,9 +488,14 @@ void mapper_scanline(void) {
         mapper.m4_irq_counter--;
     }
 
-    /* Fire IRQ when counter transitions to 0 from a non-zero value (standard MMC3 rev A).
-     * Do NOT fire when reloading with old_count==0 (that would be rev B behavior). */
-    if (old_count && !mapper.m4_irq_counter && mapper.m4_irq_enable) {
+    /* Fire whenever the counter is 0 after clocking — INCLUDING a reload-from-0
+     * (rev B). FCEUX uses isRevB=1 for standard MMC3 (Mapper4): its condition is
+     * `(count | isRevB) && !IRQCount` == `!IRQCount`. Only Mapper12/114 set
+     * isRevB=0 (rev A). We previously gated on old_count (rev A), suppressing the
+     * reload-from-0 IRQ that FCEUX fires — costing Contraf/Felix an IRQ's worth of
+     * per-frame work and desyncing raster-split gameplay. */
+    (void)old_count;
+    if (!mapper.m4_irq_counter && mapper.m4_irq_enable) {
         nes_irq();
     }
 }

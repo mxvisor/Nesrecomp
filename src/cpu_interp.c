@@ -110,10 +110,18 @@ int cpu_interp_step(void) {
     case 0x85: WR(RD(pc+1),cpu.A); cpu.PC+=2; cycles=3; break;
     case 0x95: WR((uint8_t)(RD(pc+1)+cpu.X),cpu.A); cpu.PC+=2; cycles=4; break;
     case 0x8D: addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; WR(addr,cpu.A); cpu.PC+=3; cycles=4; break;
-    case 0x9D: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; WR(addr,cpu.A); cpu.PC+=3; cycles=5; break;
-    case 0x99: addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; WR(addr,cpu.A); cpu.PC+=3; cycles=5; break;
+    /* Indexed stores do a 6502 dummy read of the UNFIXED target address (low byte
+     * indexed, high byte not carry-corrected) before the write — a real bus cycle
+     * that has side effects on I/O regs (e.g. STA $4000,X sweeping X over $4016/
+     * $4017 reads the controller → clears the lag flag; matches FCEUX/x6502_vendor
+     * GetABIWR/GetIYWR). Battletoads' reset APU-clear loop relies on this. */
+    case 0x9D: { uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.X);
+                 RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=3; cycles=5; break; }
+    case 0x99: { uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
+                 RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=3; cycles=5; break; }
     case 0x81: WR(rd16((uint8_t)(RD(pc+1)+cpu.X)),cpu.A); cpu.PC+=2; cycles=6; break;
-    case 0x91: WR(rd16(RD(pc+1))+cpu.Y,cpu.A); cpu.PC+=2; cycles=6; break;
+    case 0x91: { uint16_t b=rd16(RD(pc+1)); addr=(uint16_t)(b+cpu.Y);
+                 RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=2; cycles=6; break; }
     /* --- STX --- */
     case 0x86: WR(RD(pc+1),cpu.X); cpu.PC+=2; cycles=3; break;
     case 0x96: WR((uint8_t)(RD(pc+1)+cpu.Y),cpu.X); cpu.PC+=2; cycles=4; break;
@@ -370,6 +378,42 @@ int cpu_interp_step(void) {
     case 0x7B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_RRA(addr); break; }
     case 0x7F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_RRA(addr); break; }
 #undef DO_RRA
+
+    /* --- DCP (DEC mem + CMP A, undoc) --- */
+#define DO_DCP(ea) do { uint8_t _t=(uint8_t)(RD(ea)-1); WR((ea),_t); \
+    cpu.C=(cpu.A>=_t)?1:0; SET_NZ((uint8_t)(cpu.A-_t)); } while(0)
+    case 0xC3: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
+    case 0xC7: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_DCP(addr); break; }
+    case 0xCF: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_DCP(addr); break; }
+    case 0xD3: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
+    case 0xD7: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_DCP(addr); break; }
+    case 0xDB: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_DCP(addr); break; }
+    case 0xDF: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_DCP(addr); break; }
+#undef DO_DCP
+
+    /* --- RLA (ROL mem + AND A, undoc) --- */
+#define DO_RLA(ea) do { uint8_t _t=RD(ea),_c=cpu.C; cpu.C=(_t>>7)&1; _t=(uint8_t)((_t<<1)|_c); WR((ea),_t); \
+    cpu.A&=_t; SET_NZ(cpu.A); } while(0)
+    case 0x23: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
+    case 0x27: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_RLA(addr); break; }
+    case 0x2F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_RLA(addr); break; }
+    case 0x33: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
+    case 0x37: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_RLA(addr); break; }
+    case 0x3B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_RLA(addr); break; }
+    case 0x3F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_RLA(addr); break; }
+#undef DO_RLA
+
+    /* --- SRE (LSR mem + EOR A, undoc) --- */
+#define DO_SRE(ea) do { uint8_t _t=RD(ea); cpu.C=_t&1; _t=(uint8_t)(_t>>1); WR((ea),_t); \
+    cpu.A^=_t; SET_NZ(cpu.A); } while(0)
+    case 0x43: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
+    case 0x47: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_SRE(addr); break; }
+    case 0x4F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_SRE(addr); break; }
+    case 0x53: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
+    case 0x57: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_SRE(addr); break; }
+    case 0x5B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_SRE(addr); break; }
+    case 0x5F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_SRE(addr); break; }
+#undef DO_SRE
 
     default:
         /* Unknown opcode — skip 1 byte */

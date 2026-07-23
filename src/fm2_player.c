@@ -149,6 +149,18 @@ int fm2_tick_cmd(uint8_t *c0, uint8_t *c1, uint8_t *cmd) {
     return 1;
 }
 
+/* Peek the command byte of the NEXT (not-yet-consumed) record without
+ * advancing. Returns 0 if no more records. Used by the fceux backend to apply
+ * an FM2 soft/power reset one frame earlier than the record is consumed for
+ * input — FCEUX's FCEU_UpdateInput processes the reset before emulating the
+ * frame, which (given our 1-frame input pre-load) lands one frame ahead of
+ * where a reset in the just-consumed record would. */
+int fm2_peek_cmd(uint8_t *cmd) {
+    if (!s_buf || s_frame >= s_total) return 0;
+    *cmd = s_buf[s_frame * 3 + 0];
+    return 1;
+}
+
 int fm2_active(void) {
     return s_buf != NULL;
 }

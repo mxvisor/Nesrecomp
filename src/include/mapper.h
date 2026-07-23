@@ -50,6 +50,7 @@ typedef struct {
     uint8_t m5_chr_upper;     /* $5130: upper 2 bits of CHR bank */
     uint8_t m5_irq_line;      /* $5203: IRQ scanline target */
     uint8_t m5_irq_enable;    /* $5204 bit 7 */
+    uint8_t m5_irq_pending;   /* $5204 bit 7 (latched): set on scanline match, cleared on read */
     uint8_t m5_in_frame;      /* set by PPU rendering, cleared at VBlank */
     int     m5_scanline;      /* current in-frame scanline counter */
     uint8_t m5_mul[2];        /* $5205-$5206: hardware multiplier inputs */
@@ -70,6 +71,10 @@ void    mapper_init(int id, int prg_banks, int chr_banks, int mirroring);
 uint8_t mapper_prg_read(uint16_t addr);
 void    mapper_prg_write(uint16_t addr, uint8_t val);
 
+/* Vendored-PPU hook: rebuild nametable mirroring (vnapage) when a mapper write
+ * changes mirroring mid-frame. Registered by ppu_vendor.c; null otherwise. */
+extern void (*g_vnapage_dirty)(void);
+
 /* CHR read/write ($0000-$1FFF via PPU) */
 uint8_t mapper_chr_read(uint16_t addr);
 void    mapper_chr_write(uint16_t addr, uint8_t val);
@@ -79,6 +84,10 @@ void    mapper_chr_write(uint16_t addr, uint8_t val);
  * Used for MMC3 IRQ scanline counter (split-screen effects).
  */
 void    mapper_scanline(void);
+
+/* mapper5_hb() — MMC5 per-scanline hook (FCEUX MMC5_hb), called at dot 0 of each
+ * scanline. ppuon = PPUMASK & 0x18. */
+void    mapper5_hb(int scanline, int ppuon);
 
 /* MMC5: read mapper registers/ExRAM ($5000-$5FFF) */
 uint8_t mapper5_read(uint16_t addr);

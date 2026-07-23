@@ -20,6 +20,10 @@ fm2/*
 .vscode-ctags
 __pycache__/
 
+# GPL FCEUX vendor oracle — kept local only so the tree builds & commits GPL-free.
+# Build auto-detects it (Makefile VENDOR_SRCS); absent → --interp=fceux_vendor off.
+/nogpl/
+
 # external tool symlinks / binaries (absolute paths, not portable)
 /Mesen
 /fceux

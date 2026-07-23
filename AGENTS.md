@@ -983,19 +983,315 @@ address-collection coverage across mappers 0,1,2,3,4,5,7. See footnotes.
   note ²) and **Battletoads @5580** (lazy-render sprite-0, needs
   `--interp=fceux`).
 
-### Known limitation — RAM hash phase (TODO: post-NMI snapshot)
+### `--interp=fceux_vendor` — vendored x6502 differential oracle (2026-06-22)
 
-`--dump-sync` snapshots RAM at the VBL boundary, which is BEFORE the
-current frame's NMI handler runs; FCEUX's `registerafter` snapshots
-AFTER it. Most games rewrite page-0 RAM in the NMI handler, so the two
-snapshots differ by one NMI handler's worth of writes EVERY frame — a
-sub-frame phase difference that no integer frame offset can cancel
-(Battlecity RAM matches only ~17% at its best offset despite lags being
-in sync). Therefore **RAM% is currently informational only**; lag is
-the trusted metric. To make RAM directly comparable, capture the sync
-snapshot when the NMI handler returns (watch for `cpu.SP` returning to
-its pre-NMI value), not at the VBL boundary. Until then do not treat a
-low RAM% as logic drift when the cumulative lag drift is ~0.
+> **GPL / de-vendored (2026-07-23):** the four vendored FCEUX sources
+> (`x6502_vendor.c`, `x6502_ops.inc`, `ppu_vendor.c`, `apu_vendor.c`) are GPL, so
+> they live in a **gitignored `nogpl/`** dir, NOT in `src/` — the tree builds &
+> commits GPL-free. The Makefile auto-detects them (`VENDOR_SRCS := $(wildcard
+> nogpl/…)`): present → compiled into the `INTERP=1` build with `-DHAVE_VENDOR`,
+> which is what enables the vendor CPU path + the `--interp=fceux_vendor` flag in
+> `runner.c` (all guarded by `#ifdef HAVE_VENDOR`). Absent → default GPL-free
+> build, `--interp=fceux_vendor` prints an error and exits 1. Keep `nogpl/` locally
+> as the RAM-hash oracle. Vendor line-number refs below are unchanged (same file
+> contents, only the directory moved from `src/` to `nogpl/`).
+
+To settle whether the 2 desyncs are a CPU bug, `nogpl/x6502_vendor.c` +
+`nogpl/x6502_ops.inc` vendor FCEUX's **exact x6502 core** (GPL); built with
+`make GAME=X INTERP=1` (with `nogpl/` present), selected by `--interp=fceux_vendor`
+(same fceux PPU/loop/`--dump-sync`, only the CPU core differs). Findings:
+- **Mario vendor = 100% RAMmatch / drift 0** (bit-exact) — *more* accurate than
+  cpu_interp (which had a frame-43 RAM blip → a real, now-known cpu_interp bug).
+- **Contraf vendor STILL desyncs identically** (drift −50740 vs cpu_interp
+  −50267 — Δ473 over 170k frames). **The cycle-exact FCEUX CPU does not fix
+  Contraf** ⇒ the desync is **NOT a CPU bug**; it lives in code shared by both
+  backends — the **runner-loop NMI-delivery timing + ppu.c VBL/$2002 timing**
+  vs FCEUX's DoLine chunking. This **overturns** the earlier "sub-cycle CPU
+  residual, needs vendoring" conclusion. Next hunt target: `runner_run_fceux`
+  NMI scheduling, using the exact-CPU vendor as the confound-free oracle.
+- **Vendor IRQ wiring is still approximate** (IQTEMP transfer + catch-up arming
+  during interrupt-service): Felix 100%→98.8%, Battletoads 69.5%→6.8% in vendor
+  mode. Needs level-IRQ (IQEXT) + rising-edge before trusting vendor on
+  IRQ/copy-protection games. Non-IRQ Contraf/Mario oracle is already valid.
+
+### `--interp=fceux` de-vendor — the phase hypothesis, and its refutation (2026-07-03 / 2026-07-20)
+
+Goal: make the non-GPL `--interp=fceux` (cpu_interp + ppu.c + apu.c/apu_fceux)
+bit-match the GPL `--interp=fceux_vendor` oracle so the vendor `.c` can be
+dropped. As of the July verify_all, only **Contraf** (69.7% DESYNC) and
+**Battletoads** (12.8% DESYNC) still diverge on `our fceux`; the other 9 are ok.
+**Both remaining desyncs are ONE root cause** — proven by instruction-level trace:
+
+**Two separate findings this session:**
+
+1. **cpu_interp was missing the 6502 indexed-store dummy read** (opcodes `$9D`
+   STA abs,X, `$99` STA abs,Y, `$91` STA (zp),Y). The real 6502 (and vendor
+   `GetABIWR`/`GetIYWR`) does a dummy read of the UNFIXED target
+   `(base&0xFF00)|((base+idx)&0xFF)` before the write — a real bus cycle with I/O
+   side-effects. Battletoads' reset APU-clear loop `LDX #$17; STA $4000,X` sweeps
+   X over `$4016/$4017`; that dummy read hits `ctrl_read` → clears the lag flag,
+   exactly like FCEUX. **FIXED** in `cpu_interp.c` → Battletoads first lag
+   divergence 4 → 5602. **verify_all: 0 regressions** (all 9 green games unchanged,
+   Mario RAM-blip@43 is pre-existing). NOTE `cpu_interp.c` is SHARED by beam +
+   recompiled + fceux — the dummy read now fires on any indexed store to
+   `$2000-$401F` (all correct HW behaviour). *Still possibly missing:* the same
+   unfixed dummy read on RMW abs,X/Y and page-cross dummy read on indexed LOADs.
+
+2. **~~The remaining desync = a CPU↔PPU warm-up PHASE offset; restructuring
+   `runner_run_fceux` to postrender-first resolves BOTH games.~~ — REFUTED
+   2026-07-20. The restructure was done. It fixed neither game.** Kept here so
+   nobody re-derives it.
+
+   What was measured in 2026-07-03 and still holds: the CPU instruction/cycle
+   streams are byte-identical between the backends, offset by **+714 instructions
+   (2499 cyc / 7502 dots)** of power-on warm-up, because `runner_run_fceux` was
+   **visible-first** while `ppuv_loop_frame` is **postrender-first** (a rotation of
+   the 81840 visible dots). That part was correct.
+
+   What was WRONG was the conclusion that this phase offset *caused* the Contraf /
+   Battletoads divergence. See the 2026-07-20 section below.
+
+### post-render-first restructure — DONE, and it did NOT fix either game (2026-07-20)
+
+`runner_run_fceux` now emits a frame in the vendor's order, and the phase gap is
+closed and verified. **Both target games still desync.** Do not spend another
+session on frame-loop phase.
+
+**What the loop looks like now** (`SL = 341`, `vbase = 22*SL - skip` = dot of
+visible line 0, `skip` = the odd-frame dot drop):
+
+| dots | what |
+|---|---|
+| `[0, 341)` | post-render line 240 |
+| `341` | VBL set; `+12` → NMI |
+| `[341, 7161)` | vblank lines 241..260 |
+| `[7161, vbase)` | pre-render line 261 (odd-frame dot skip lands here) |
+| `[vbase, …)` | visible lines 0..239 |
+
+Two things are BOTH required, and either alone leaves a whole-frame error:
+the rotation, **and** `g_ppudead = 2` (the vendor always warms up 2 dead frames;
+we used 1). `2*89342 + 341 = 179025` = the vendor's first VBL dot, exactly.
+`g_ppudead` is set locally in `runner_run_fceux` so the beam backend, which is
+calibrated for 1, is untouched.
+
+**Verification the phase is now identical:** instrument `g_total_cpu_cycles` (NV)
+against `timestamp` (vendor, `x6502_vendor.c`) at each frame boundary — equal for
+thousands of frames. That closes the phase theory by measurement.
+
+**What it bought (real, but not the goal):**
+- Deleted two reset hacks that existed *only* to compensate for the wrong frame
+  boundary: the `fm2_peek_cmd` soft-reset peek-ahead and the `g_reset_pending`
+  defer-to-next-frame. Reset is now applied inline from the just-consumed record
+  via `fceux_power_reset()` / `fceux_soft_reset()`, mirroring
+  `runner_run_fceux_full` one-for-one.
+- Mario/Battlecity/Felix/Zelda are bit-identical to the oracle (incl. RAM hash);
+  Mermaid and Superc reach 100.0% +0 on `our fceux` where `our beam` is 99.6%/99.9%.
+
+**What it cost:** Battletoads 12.8% DESYNC@6904 → 11.6% DESYNC@5960. Contraf went
+the other way, 69.7% DESYNC@12516 → 70.2% DESYNC@14458. Roughly a wash.
+
+**Also fixed (kept):** `fceux_on_2002_read` must rebase by `g_fceux_vbase` (visible
+line 0 is no longer at dot 0 — without this the `sl` check never matches and the
+mid-line sprite-0 check is silently dead) **and add +16**, because FCEUX's
+`ResetRL` sets a line's pixel origin 16 dots before the nominal boundary
+(`DoLine: … ResetRL(); X6502_Run(16);`), so `GETLASTPIXEL` runs 16 ahead of our
+dot. Measured: +16 alone is worth Battletoads @5847 → @5960.
+
+**Tried and measured EXACTLY NEUTRAL — but see the next section before trusting
+that:** splitting sprite-0 evaluation into FCEUX's two phases (`FetchSpriteData` at
+dot 256 / `RefreshSprites` at dot 325), moving `copy_hori` (`Fixit2`) to dot 262 of
+the previous line, making the pre-render do the full `RefreshAddr = TempAddr` at dot
+325, and the `tofix` latch (`inc_vert` on the first `$2002` read past dot 268, else
+at EndRL). All four are faithful to `ppu_vendor.c`, all four changed Battletoads by
+**zero** (11.6% / +68944 / @5960 with and without, bit-identical). Reverted at the
+time. ⚠️ **The `tofix` latch was later proven necessary** — it was unobservable in
+the whole-line-at-line-start renderer, not wrong. See below.
+
+**Where Battletoads actually stands (@5911 in RAM terms):** line 30, the raster
+split. BG opacity matches the vendor for **254 of 256 pixels** — only x=254 and
+x=255 differ, and x=254 is precisely the sprite-0 test pixel (`sphitx=254`). The
+cause is upstream: `ppu.v_addr` differs by one `inc_vert` — ours `02A0` (fine_y 0,
+coarse_y 21) vs vendor `7280` (fine_y 7, coarse_y 20). The `tofix` latch did not
+close it, so the extra increment comes from somewhere else. **Next lead:** FCEUX
+renders a line *incrementally* — `RefreshLine` draws tiles `[firsttile, lasttile)`
+as the CPU advances, advancing `RefreshAddr` as it goes, plus a "render one extra
+tile while a sprite-0 is pending" hack. We render the whole line at line start from
+a local copy of `v`. Matching that is the next real piece of work.
+
+**Method that worked, reuse it:** per-instruction `(cycle, PC)` trace gated on a
+cycle window in both backends (`dbg_ins` before `cpu_interp_step` and before
+`ADDCYC(CycTable[b1])`), plus a RAM-write watch (NV via `mem_write`, vendor via the
+`WrRAM` macro — the vendor writes zero page directly, NOT through `mem_write`).
+Diff the streams **positionally**; the frame label is an artifact.
+
+### Battletoads SOLVED — lazy line rendering, and all nine LineUpdate triggers (2026-07-21)
+
+**`our fceux` Battletoads: 11.6% / +68944 / DESYNC@5960 → 100.0% / +0 / ok.**
+No lag mismatch anywhere in the 78 031-frame demo. Three changes, and they only
+work as a set — each is a no-op without the others.
+
+**1. `fceux_refresh_line()` — render the line lazily and incrementally.** FCEUX
+never draws a scanline up front. `ResetRL` only blanks the buffer and rewinds the
+cursor; `RefreshLine(lastpixel)` then draws tile columns `[firsttile, lasttile)`
+whenever the CPU touches the PPU, and `EndRL` finishes whatever is left at
+`lastpixel = 272`. Key details, all load-bearing:
+- `lasttile = lastpixel >> 3`, capped at 34; `numtiles <= 0` returns early.
+- Pixels are emitted only for `X1 >= 2` — the two-tile fetch delay. At a given
+  `lastpixel` only pixels below `(lasttile-2)*8` exist, which is exactly where
+  `CheckSpriteHit`'s `-16` comes from.
+- `RefreshAddr` (our `ppu.v_addr`) is advanced by the loop **and written back**.
+  Rendering from a local copy of `v` leaves it stale for a mid-line `$2007`.
+- `!ScreenON && !SpriteON` → backdrop and **no** address advance; `!ScreenON` with
+  sprites on → fetches still happen (address advances), pixels are backdrop.
+
+**2. The `tofix` latch (previously judged neutral, and that judgement was wrong).**
+`Fixit1` (inc_vert) fires inside the *first* `RefreshLine` with
+`lastpixel >= TOFIXNUM (268)`, not at `EndRL` — so the line's last tile is fetched
+with `fine_y` already advanced. In the old whole-line renderer one `fine_y` covered
+the entire scanline, so moving `Fixit1` **could not change a single pixel**; it
+measured neutral because it was unobservable, not because it was wrong. Tile 33
+paints screen x 248..255 — which is precisely the "254 of 256 pixels match, x=254
+and x=255 differ" symptom recorded above.
+
+**3. Hook ALL nine `FCEUPPU_LineUpdate()` triggers — this was the actual bug.**
+We hooked only the `$2002` **read**. FCEUX calls `LineUpdate` on reads of `$2002`,
+`$2004`, `$2007` and the open-bus default (i.e. *every* `$200x` read), and on writes
+of `$2000`, `$2001`, `$2005`, `$2006`, `$2007` (**not** `$2002`/`$2003`/`$2004`).
+That is what makes a mid-line register write a raster split instead of a retroactive
+repaint. Measured on frame 5905 line 14: the vendor issued three `RefreshLine` calls
+(driven by `$2007` writes), we issued one, and our `v_addr` ended the line at `0260`
+against the vendor's `0110`.
+
+**Lesson worth more than the fix:** a fidelity change that measures neutral may be
+*unobservable in the current structure* rather than refuted. Both #2 and the
+incremental render scored bit-identical on their own. Re-test shelved "neutral"
+changes after any structural change to the thing they depend on.
+
+### Contraf SOLVED — PowerNES discards the CPU↔PPU carry (2026-07-21)
+
+**Fix:** FCEUX's `X6502_Power()` does `memset(&X, 0, sizeof(X))`, and that zeroes
+`X.count` — the sub-frame CPU↔PPU remainder. So a **PowerNES throws away the
+overshoot of the previous frame's last instruction and restarts the CPU exactly on
+the frame boundary.** Our equivalent of `X.count` is `g_fceux_dot`'s carry past
+`frame_dots`, and we were carrying it through the reset. Contraf's fm2 has a
+`cmd=2` PowerNES at record 5948; we came out of it 8 dots ahead and never recovered.
+
+Three lines in `runner.c`: `fceux_power_reset()` sets `g_fceux_drop_carry`, and the
+carry line at the bottom of the frame loop zeroes `g_fceux_dot` instead of
+subtracting `frame_dots`. Two things that are easy to get wrong:
+
+- **`fceux_soft_reset()` must NOT set the flag.** `X6502_Reset` only sets
+  `_IRQlow |= FCEU_IQRESET`; it does not touch `X.count`. Only PowerNES drops it.
+- **The pre-loop `fceux_power_reset()` (the fm2 record-0 power-on marker) must
+  disarm the flag again.** It runs before frame 1, where there is no carry yet —
+  leaving it armed throws away frame 1's own legitimate overshoot instead. Getting
+  this wrong cost Battletoads its 100.0% (it fell to 77.5% / DESYNC@13764) while
+  Contraf still looked fixed, because Contraf's mid-movie reset dominated.
+
+**The earlier "1-dot frame-length loss at frame 5943" in this file was WRONG** and
+has been deleted. Direct measurement (log `dead`/`kook`/`len`/cumulative dots per
+frame on both sides, compare positionally) shows frame lengths are **identical on
+all 6000 frames** and the dot position is **identical through frame 5947** — the
+divergence starts exactly at the reset. The theory that a 1-dot error must come
+from `262*SL - skip` vs `89342 - kook` was sound reasoning from a bad measurement.
+
+⚠️ **Do not compare `g_total_cpu_cycles` against the vendor's `timestamp`** — they
+diverge by frame 1327 on Contraf purely as an accounting artefact: DMC stall cycles
+advance `g_fceux_dot` but are never added to `g_total_cpu_cycles` (`runner.c`, the
+`g_dmc_stall` branch). Compare **dot position**, not cycles. The vendor's absolute
+dot is `cumulative_budget*16 - x6502v_count()` (`X.count` is in 1/16-dot units:
+1 CPU cycle = 48, 1 dot = 16); ours is `(cumulative_frame_dots + g_fceux_dot)*16`.
+
+Other measurements from the hunt, all still valid and all *negative* — the MMC3
+scanline-hook stream is identical over 5900–5960 (12532 events incl. IRQ flags);
+the APU frame IRQ is raised at the same instruction; `skip` and `kook` are in phase.
+⚠️ When comparing MMC3 hooks, log **both** call sites — the visible-line one *and*
+the pre-render one (`runner.c` ~907 / `ppu_vendor.c` 614). Logging only one makes
+the vendor look like it has extra events; its `scanline` still reads 240 at the
+pre-render hook (stale from the previous frame) — that is not "line 240".
+
+**Corpus after the fix** — `our fceux` is **11/11 ok**. 100.0% +0 on Battlecity,
+Battletoads, Contraf, Felix, Mario, Mermaid, Superc, Zelda; Adventure 99.0% +389,
+Captain 99.6% −1634, Castle3 99.7% −643 (all `ok`). Note Adventure and Castle3
+*moved* (+391→+389, −684→−643): their fm2s also contain a PowerNES, so they were
+carrying stray dots through it too. Both are closer to zero.
+
+**Residual, lag-invisible:** the RAM hash still diverges from the FCEUX reference on
+some games while `--interp=fceux_vendor` matches it to the end. Lag is unaffected
+across the whole corpus, so this is a tightening lead, not a sync bug. See the next
+section — most of this residual was closed 2026-07-22.
+
+### RAM hash — $2000-write NMI-enable EDGE fix (2026-07-22): 4→7/11 exact
+
+**`--interp=fceux` RAM-exact went 4→7/11, zero lag regressions.** Fixed
+Battletoads (11→None), Mermaid (10260→None), Captain (10→None); Adventure 9→**64950**
+(lag drift even improved +389→+210). Mario/Battlecity/Felix stay None.
+
+**Root cause (ppu.c `ppu_write` case 0 = $2000):** we fired `nes_nmi()` on
+`(val&0x80) && (regs[2]&0x80)` with **no edge test** (and `regs[0]` already
+overwritten). FCEUX `B2000` (`ppu_vendor.c:500`) fires only on the **0→1 edge** of
+NMI-enable while VBL is set: `!(vPPU[0]&0x80) && (V&0x80) && (PPU_status&0x80)`. A
+`$2000` write with bit7 **already 1** during vblank spuriously **re-fired the NMI →
+2 NMIs/frame** → a delay loop caught one iteration off at the VBL snapshot → RAM
+diverged. Fix: capture `old_ctrl = ppu.regs[0]` before the store, gate on
+`!(old_ctrl&0x80)`. Shared ppu.c ⇒ beam + recompiler also change.
+
+**verify_all CONFIRMED (2026-07-22) — no lag regression, net improvement.**
+our fceux 11/11 ok, and the fix *improved* two: **Captain −1634→+0 (bit-perfect)**,
+Adventure +389→+210; rest still +0. Beam: the 4 bit-exact games (Mario/Battlecity/
+Zelda/Felix) held drift 0; Mermaid/Captain beam improved; the only 2 beam DESYNCs
+(Battletoads, Contraf) were already desyncing pre-fix and still are (drift numbers
+shifted, verdict unchanged — not new). Vendor 11/11 ok. Not committed (GPL files
+still present; never commit without explicit user confirmation).
+
+**The method (reuse for RAM-hash work): three-way A/B/C isolation.** Dump raw RAM
+$000-$7FF at the first divergent frame from A=`--interp=fceux` (cpu_interp+our
+ppu+loop), B=hybrid (vendor CPU + our ppu + our loop; force `g_cpu_vendor=1` while
+still calling `runner_run_fceux`), C=`--interp=fceux_vendor` (oracle). **A==B on
+every game ⇒ the CPU is NOT the cause** — the RAM divergence is in ppu.c/loop, not
+cpu_interp. (This overturns the "RAM = cpu_interp bug" framing.) Then per-frame
+instruction-count trace → origin frame (first with OAM DMA); per-frame NMI-delivery
+log (interrupted PC) → 2-vs-1 NMI count.
+
+### RAM hash — MMC5 scanline IRQ was never clocked in the fceux backend (2026-07-22)
+
+`runner_run_fceux` clocked MMC5 via `mapper_scanline()` — which is **MMC3-only**
+(`if (mapper.id != 4) return;`). The real MMC5 hook `mapper5_hb()` was called **only
+by the vendored ppu_vendor.c**, never by our fceux loop (or our beam ppu.c). So the
+MMC5 split-screen IRQ never fired on `--interp=fceux`. Found by a per-frame **NMI/IRQ
+delivery count** (B=our loop vs C=vendor): from frame 10 the vendor fired 1 IRQ/frame,
+we fired 0; RAM diverged one frame later (@11). Fix: call
+`mapper5_hb(sl, ppu.regs[1]&0x18)` at each visible line's dot 0 (like FCEUX DoLine),
+`m5_in_frame=0` before the loop so line 0 enters the frame. **Castle3 lag
+99.7%/−643 → 100.0%/+0 (bit-perfect — the missing IRQ skewed lag too); RAM
+first-mismatch 11 → 6442.** fceux-backend `id==5` only (Castle3 is the sole MMC5 game).
+
+**The RAM hash includes the STACK page $0100-$01FF.** Bytes below SP are dead but
+hashed, so a tiny stack-depth phase difference shows as a **one-frame mismatch that
+re-converges next frame with zero-page never diverging** — NOT a logic bug. Confirmed:
+Castle3 @6442 (8 stack bytes, gone by 6500) and Zelda @3724 (1 stack byte). When
+triaging a first_ram_mismatch, split diffs by page (zp/$01xx/other) and check
+re-convergence before calling it real.
+
+**Remaining after both fixes:** Adventure @64950 (categorization pending);
+**Superc @4** (A==B==C: vendored port ≠ real FCEUX — out of reach); Contraf @8013
+(RNG `$0029` churn, known-hard). **Next lead** for any true NMI-jitter residual: our
+$2000-write NMI is immediate (`nes_nmi()`); FCEUX `TriggerNMI2()` delays one
+instruction (IQNMI2).
+
+### RAM hash phase — the old "informational only" caveat is OBSOLETE (2026-07-22)
+
+The earlier worry — that `--dump-sync` snapshots RAM at the VBL boundary (before the
+frame's NMI handler) while FCEUX's `registerafter` snapshots after, giving an
+uncancellable phase offset — turned out to be **wrong in practice**: our snapshot
+phase IS comparable to the reference (both the vendored oracle and the FCEUX ref
+match `--interp=fceux` **bit-for-bit end-to-end on 7/11 games**, Battlecity included
+— the old "~17%" figure predated the unified FM2 timing). So **RAM hash is a valid
+frame-to-frame metric**, not merely informational, and a first-divergence frame is a
+real, localisable defect (see the $2000 NMI-edge fix above). The one caveat that
+survives: the **stack page $0100-$01FF is hashed**, so dead bytes below SP can differ
+without meaning anything (Zelda @3724 is exactly this). Lag is still the trusted
+demo-sync verdict; RAM hash is the tightening metric.
 
 ### Unified FM2 timing + PPU warm-up (ppudead=1) — implemented
 

@@ -57,7 +57,7 @@ for g in "${GAMES[@]}"; do
     printf '[verify] %-12s ' "$g" >&2
     fm2="fm2/$g.fm2"; rom="rom/$g.nes"
     ref="$LAGDIR/$g.fceux.txt"; ours="$LAGDIR/$g.ours.txt"
-    ours_f="$LAGDIR/$g.ours_fceux.txt"; md5f="$LAGDIR/$g.fm2.md5"
+    ours_f="$LAGDIR/$g.ours_fceux.txt"; ours_v="$LAGDIR/$g.ours_vendor.txt"; md5f="$LAGDIR/$g.fm2.md5"
     [ -e "$fm2" ] || { rows+=("$(printf '%-13s  (no %s)' "$g" "$fm2")"); echo skip >&2; continue; }
     max="$(grep -c '^|' "$fm2")"
 
@@ -82,6 +82,8 @@ for g in "${GAMES[@]}"; do
     ./bin/"$g" --headless --interp=beam   --playback "$fm2" --frames "$max" --dump-sync "$ours"   >/dev/null 2>&1
     printf 'run(fceux) ' >&2
     ./bin/"$g" --headless --interp=fceux  --playback "$fm2" --frames "$max" --dump-sync "$ours_f" >/dev/null 2>&1
+    printf 'run(vendor) ' >&2
+    ./bin/"$g" --headless --interp=fceux_vendor --playback "$fm2" --frames "$max" --dump-sync "$ours_v" >/dev/null 2>&1
 
     # ---- 3. FCEUX reference: regenerate if missing or FM2 changed (md5 sidecar) ----
     cur="$(md5sum "$fm2" | cut -d' ' -f1)"
@@ -107,7 +109,7 @@ for g in "${GAMES[@]}"; do
     echo "$cur" > "$md5f"   # ref valid for this fm2 (just generated, or adopted)
 
     # ---- 4. compare both backends vs the FCEUX reference ----
-    row="$(GAME="$g" BEAM="$ours" FCX="$ours_f" REF="$ref" python3 - <<'PY'
+    row="$(GAME="$g" BEAM="$ours" FCX="$ours_f" VEN="$ours_v" REF="$ref" python3 - <<'PY'
 import os
 def load(p):
     L=[]
@@ -141,22 +143,22 @@ def stats(o,f):
     verdict = (f"DESYNC@{onset}" if onset is not None else "DESYNC") if desync else "ok"
     return (n, 100.0*match/n, drift, verdict)
 g=os.environ["GAME"]
-f=load(os.environ["REF"]); b=load(os.environ["BEAM"]); x=load(os.environ["FCX"])
-sb=stats(b,f); sx=stats(x,f)
-if sb is None and sx is None:
+f=load(os.environ["REF"]); b=load(os.environ["BEAM"]); x=load(os.environ["FCX"]); v=load(os.environ["VEN"])
+sb=stats(b,f); sx=stats(x,f); sv=stats(v,f)
+if sb is None and sx is None and sv is None:
     print(f"{g:<12} (empty)"); raise SystemExit
-n = (sb or sx)[0]
+n = (sb or sx or sv)[0]
 def fmt(s):
     if s is None: return f"{'--':>6} {'--':>8} {'--':>12}"
     _,lm,d,vd = s
     return f"{lm:5.1f}% {d:+8d} {vd:>12}"
-print(f"{g:<12} {n:7d}  | {fmt(sb)} | {fmt(sx)}")
+print(f"{g:<12} {n:7d}  | {fmt(sb)} | {fmt(sx)} | {fmt(sv)}")
 PY
 )"
     rows+=("$row"); echo ok >&2
 
     if [ "$DETAIL" = 1 ]; then
-        det="$(GAME="$g" BEAM="$ours" FCX="$ours_f" REF="$ref" python3 - <<'PY'
+        det="$(GAME="$g" BEAM="$ours" FCX="$ours_f" VEN="$ours_v" REF="$ref" python3 - <<'PY'
 import os
 def load(p):
     L=[]
@@ -168,7 +170,7 @@ def load(p):
     return L
 g=os.environ["GAME"]; f=load(os.environ["REF"])
 print(f"\n--- {g}: detail (vs real FCEUX) ---")
-for label,p in (("our beam",os.environ["BEAM"]),("our fceux",os.environ["FCX"])):
+for label,p in (("our beam",os.environ["BEAM"]),("our fceux",os.environ["FCX"]),("our vendor",os.environ["VEN"])):
     o=load(p); n=min(len(o),len(f))
     if n==0: print(f"  {label}: (no data)"); continue
     first=next((i for i in range(n) if o[i][0]!=f[i][0]), None)
@@ -188,8 +190,8 @@ done
 # real-fceux is 100%/0/None by definition and not shown as a column).
 # Each backend block: lagMatch% | drift (ours-fceux) | 1stSustDiv (None=plays through).
 echo
-printf '%-12s %7s  | %-28s | %-28s\n' GAME n 'our beam (vs fceux)' 'our fceux (vs fceux)'
-printf '%-12s %7s  | %6s %8s %12s | %6s %8s %12s\n' '' '' lag% drift verdict lag% drift verdict
-printf '%.0s-' {1..82}; echo
+printf '%-12s %7s  | %-28s | %-28s | %-28s\n' GAME n 'our beam (vs fceux)' 'our fceux (vs fceux)' 'our vendor (vs fceux)'
+printf '%-12s %7s  | %6s %8s %12s | %6s %8s %12s | %6s %8s %12s\n' '' '' lag% drift verdict lag% drift verdict lag% drift verdict
+printf '%.0s-' {1..114}; echo
 for r in "${rows[@]}"; do echo "$r"; done
 for d in "${details[@]+"${details[@]}"}"; do echo "$d"; done

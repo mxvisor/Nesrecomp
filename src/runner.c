@@ -11,6 +11,7 @@
 /* Flag set by SIGTERM handler so runner_run() exits cleanly */
 static volatile int g_running = 1;
 
+
 static void handle_sigterm(int sig) {
     (void)sig;
     g_running = 0;
@@ -54,6 +55,7 @@ static int g_hermetic = 0;
 /* Total CPU cycles since power-on */
 uint64_t g_total_cpu_cycles = 0;
 
+
 /* FCEUX-style PPU catch-up before a PPU register access (interp mode only).
  * g_ppu_catchup_dots is armed each instruction with base_cycles*3; when the
  * instruction reads a PPU register, ppu_read() steps the PPU by that many dots
@@ -66,6 +68,20 @@ int g_ppu_caught_up    = 0;
 /* PPU backend: 0 = default beam-accurate (ppu.c), 1 = FCEUX-faithful (ppu_fceux.c).
  * Selected by --interp=fceux. See docs/interp-fceux-design.md. */
 int g_ppu_backend = 0;
+
+/* CPU core for the fceux backend: 0 = our cpu_interp, 1 = vendored FCEUX x6502
+ * (--interp=fceux_vendor). A cycle-exact differential oracle vs cpu_interp —
+ * same fceux PPU/loop/dump, only the CPU core differs. See x6502_vendor.c. */
+int g_cpu_vendor = 0;
+static uint8_t g_fm2_first_cmd = 0;   /* cmd byte of FM2 record 1 (for full-vendor power) */
+
+#ifdef HAVE_VENDOR
+int x6502v_step(void);
+void x6502v_power(void);
+void x6502v_reset(void);
+void x6502v_triggerNMI(void);
+void x6502v_triggerIRQ(void);
+#endif
 
 /* FCEUX default NTSC palette (64 entries) — must match FCEUX for hash comparison */
 static const uint8_t FCEUX_PAL_R[64] = {
@@ -334,13 +350,30 @@ void nes_nmi(void) {
 }
 
 void nes_irq(void) {
-    if (!cpu.I)
-        g_irq_pending = 1;
+    /* Assert the IRQ line unconditionally — it is LEVEL-sensitive (MMC3/APU hold
+     * it until acknowledged). Gating the assert on the I flag dropped any IRQ
+     * raised while I was set (e.g. during the NMI handler); on real hardware the
+     * line stays asserted and fires the instant I clears (CLI/RTI). FCEUX keeps
+     * it pending via IQEXT. Delivery still checks I (see fceux_run_to). */
+    g_irq_pending = 1;
 }
 
 void nes_reset(void) {
     cpu.PC = mem_read(0xFFFC) |
             ((uint16_t)mem_read(0xFFFD) << 8);
+    /* Soft reset must mirror FCEUX ResetNES -> FCEUPPU_Reset(), not just reload
+     * PC. FCEUPPU_Reset clears PPUCTRL/MASK/STATUS/OAMADDR + scroll latches,
+     * re-arms the 2-frame PPU warm-up (ppudead = 2) and resets the odd/even
+     * dot-skip phase (kook = 0). Without the warm-up the post-reset boot runs
+     * 2 fewer dead/lag frames than FCEUX, desyncing demos that soft-reset
+     * mid-stream (Contraf resets at frame 2907 -> "NEOCITY 1992" cutscene). */
+    ppu.regs[0] = ppu.regs[1] = ppu.regs[2] = ppu.regs[3] = 0;
+    ppu.v_addr = ppu.t_addr = ppu.vaddr = 0;
+    ppu.write_toggle = 0;
+    ppu.fine_x = ppu.fine_x_latch = 0;
+    ppu.in_vblank = 0;
+    ppu.frame_odd = 0;     /* FCEUX kook = 0 */
+    g_ppudead = 2;         /* FCEUX FCEUPPU_Reset: ppudead = 2 (power-on is 1) */
 }
 
 /* Flush accumulated CPU cycles to PPU/APU.
@@ -573,6 +606,10 @@ int runner_init(const char *title, const char *rom_path) {
    docs/interp-fceux-design.md and AGENTS.md AxROM section.
    ========================================================================= */
 int g_fceux_dot = 0;   /* dots into the current frame, the lazy beam position */
+/* Dot at which visible line 0 starts. The frame runs post-render-first, so the
+ * visible lines do NOT begin at dot 0 — anything converting g_fceux_dot into a
+ * (scanline, pixel) pair must subtract this first (ppu.c fceux_on_2002_read). */
+int g_fceux_vbase = 0;
 
 /* Run the interpreter until the frame reaches >= target_dot, delivering NMI/IRQ
  * at instruction boundaries (FCEUX X6502_Run; arg is in PPU dots, 3 dots = 1 CPU
@@ -582,13 +619,45 @@ int g_fceux_dot = 0;   /* dots into the current frame, the lazy beam position */
 static void fceux_run_to(int target_dot) {
     extern const uint8_t cpu_base_cycles[256];
     while (g_fceux_dot < target_dot && g_running) {
+#ifdef HAVE_VENDOR
+        if (g_cpu_vendor) {
+            /* Vendored FCEUX x6502: it services NMI/IRQ internally via X.IRQlow,
+             * so just hand off our pending flags. One x6502v_step() = (optional
+             * interrupt service) + one instruction, like FCEUX's run-loop iter. */
+            if (g_nmi_pending) { g_nmi_pending = 0; g_nmi_just_fired = 1; x6502v_triggerNMI(); }
+            /* Mirror our level IRQ line into the vendor's IQEXT (level), exactly
+             * like FCEUX X6502_IRQBegin/End(FCEU_IQEXT). Do NOT consume
+             * g_irq_pending here — it is held until the handler acks ($E000 →
+             * g_irq_pending=0). The old one-shot IQTEMP dropped any IRQ raised
+             * while I was set (lost on the next step), unlike a real level line. */
+            { extern void x6502v_irqbegin(int), x6502v_irqend(int);
+              if (g_irq_pending) x6502v_irqbegin(0x001); else x6502v_irqend(0x001); }
+            extern uint16_t x6502v_pc(void);
+            g_ppu_catchup_dots = cpu_base_cycles[mem_read(x6502v_pc())] * 3;
+            g_cpu_cycles = 0;
+            int c = x6502v_step();
+            c += (int)g_cpu_cycles; g_cpu_cycles = 0;  /* OAM DMA ($4014) side cost, like cpu_interp/FCEUX */
+            if (c < 1) c = 1;
+            for (int i = 0; i < c; i++) apu_step();
+            g_total_cpu_cycles += c;
+            g_fceux_dot += c * 3;
+            { extern uint32_t g_dmc_stall;
+              if (g_dmc_stall) { uint32_t s = g_dmc_stall; g_dmc_stall = 0;
+                for (uint32_t k = 0; k < s; k++) apu_step(); g_fceux_dot += s * 3; } }
+            g_ppu_catchup_dots = 0;
+            continue;
+        }
+#endif /* HAVE_VENDOR */
         if (g_nmi_pending) {
             g_nmi_pending = 0; g_nmi_just_fired = 1;
             stack_push((cpu.PC >> 8) & 0xFF); stack_push(cpu.PC & 0xFF);
             stack_push(get_P() & ~0x10); cpu.I = 1;
             cpu.PC = mem_read(0xFFFA) | ((uint16_t)mem_read(0xFFFB) << 8);
-            /* NMI takes 7 CPU cycles; advance APU+dot clock like FCEUX ADDCYC(7) */
+            /* NMI takes 7 CPU cycles; advance APU+dot clock like FCEUX ADDCYC(7).
+             * The 7 are ADDCYC'd BEFORE the next instruction's SoundCPUHook in
+             * FCEUX, so defer them into apu_fceux's next hook. */
             for (int i = 0; i < 7; i++) apu_step();
+            { extern int g_apuf_deferred; g_apuf_deferred += 7; }
             g_total_cpu_cycles += 7; g_fceux_dot += 7 * 3; continue;
         }
         if (g_irq_pending && !cpu.I) {
@@ -597,29 +666,160 @@ static void fceux_run_to(int target_dot) {
             stack_push(get_P() & ~0x10); cpu.I = 1;
             cpu.PC = mem_read(0xFFFE) | ((uint16_t)mem_read(0xFFFF) << 8);
             for (int i = 0; i < 7; i++) apu_step();
+            { extern int g_apuf_deferred; g_apuf_deferred += 7; }
             g_total_cpu_cycles += 7; g_fceux_dot += 7 * 3; continue;
         }
-        g_ppu_catchup_dots = cpu_base_cycles[mem_read(cpu.PC)] * 3;
+        int base = cpu_base_cycles[mem_read(cpu.PC)];
+        g_ppu_catchup_dots = base * 3;
+        /* apu_fceux DMC/frame hook — FCEUX SoundCPUHook runs BEFORE the instruction
+         * executes, batched with cycles = base + previously-deferred extras/stalls/
+         * interrupts. This is what makes the DMC 4-cycle stall land on the exact
+         * instruction FCEUX picks (Contraf $0029 churn) — see apu_fceux.c. */
+        { extern int g_apuf_deferred; extern void apu_fceux_hook(int);
+          apu_fceux_hook(base + g_apuf_deferred); g_apuf_deferred = 0; }
         g_cpu_cycles = 0;
         cpu_interp_step();
         int c = g_cpu_cycles ? (int)g_cpu_cycles : 1;
         for (int i = 0; i < c; i++) apu_step();
         g_total_cpu_cycles += c;
         g_fceux_dot += c * 3;
+        { extern int g_apuf_deferred; int extra = c - base; if (extra > 0) g_apuf_deferred += extra; }
         /* Drain DMC DMA stalls (CPU halted ~4 cyc per sample fetch) into the dot
-         * budget, exactly like the beam loop. Without this the fceux backend runs
-         * too many CPU cycles/frame on DMC-heavy games, shifting the wait-for-IRQ
-         * RNG-churn count off FCEUX (e.g. Contraf $0029). */
+         * budget, exactly like the beam loop. The stall cycles are ADDCYC'd after
+         * the instruction in FCEUX → defer them into apu_fceux's next hook too. */
         { extern uint32_t g_dmc_stall;
           if (g_dmc_stall) {
             uint32_t s = g_dmc_stall; g_dmc_stall = 0;
             for (uint32_t k = 0; k < s; k++) apu_step();
             g_fceux_dot += s * 3;
+            { extern int g_apuf_deferred; g_apuf_deferred += (int)s; }
           }
         }
         g_ppu_catchup_dots = 0;
         g_cpu_cycles = 0;
     }
+}
+
+#ifdef HAVE_VENDOR
+/* Fully-vendored FCEUX core (--interp=fceux_vendor): vendored CPU (X6502v_Run)
+ * + vendored old PPU (ppuv_loop_frame). Bit-exact-by-construction oracle. */
+static void runner_run_fceux_full(void) {
+    extern int  g_ppuv_active;
+    extern void ppuv_power(void);
+    extern void ppuv_loop_frame(void);
+    extern void X6502v_Power(void);
+    extern void FCEUPPU_Reset(void);
+    extern void apuv_power(void);
+    g_ppuv_active = 1;
+    ppuv_power();
+    apuv_power();
+    X6502v_Power();
+    /* FM2 record 1 carrying a hard-reset (|2|) is the movie's power-on marker —
+     * apply it as a real PowerNES so the vendored boot starts where FCEUX's does. */
+    if (g_fm2_first_cmd & 2) {
+        extern void ppuv_hardreset(void);
+        for (int i = 0; i < (int)sizeof(ram); i++) ram[i] = (i & 4) ? 0xFF : 0x00;
+        mapper_init(EMBEDDED_MAPPER_ID, EMBEDDED_PRG_BANKS,
+                    EMBEDDED_CHR_BANKS, EMBEDDED_MIRRORING);
+        ppuv_hardreset();
+        X6502v_Power();
+    }
+    extern uint8_t *ppuv_xbuf(void);
+    while (g_running) {
+        ppuv_loop_frame();
+        /* ---- live display (vendor core renders to its own XBuf) ---- */
+        if (!g_headless) {
+            static int speed_ctr = 0;
+            int show = (++speed_ctr >= g_speed);
+            if (show) speed_ctr = 0;
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_QUIT) { g_running = 0; break; }
+                if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) { g_running = 0; break; }
+            }
+            if (show) {
+                uint8_t *xb = ppuv_xbuf();
+                for (int i = 0; i < SCREEN_W * SCREEN_H; i++) {
+                    uint8_t idx = xb[i] & 0x3F;
+                    ppu.framebuf[i] = 0xFF000000u | (FCEUX_PAL_R[idx] << 16)
+                                    | (FCEUX_PAL_G[idx] << 8) | FCEUX_PAL_B[idx];
+                }
+                SDL_UpdateTexture(texture, NULL, ppu.framebuf, SCREEN_W * 4);
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, texture, NULL, NULL);
+                SDL_RenderPresent(renderer);
+            }
+        }
+        g_current_frame++;
+        if (g_sync_file) {
+            if (g_lag_flag) g_lag_count++;
+            fprintf(g_sync_file, "%d %d %u %08X\n",
+                    g_current_frame, g_lag_flag, g_lag_count, djb2_buf(ram, 0x800));
+        }
+        if (g_frame_limit && g_current_frame >= (int)g_frame_limit) g_running = 0;
+        if (fm2_active()) {
+            g_lag_flag = 1;
+            uint8_t c0 = 0, c1 = 0, fm2_cmd = 0;
+            if (!fm2_tick_cmd(&c0, &c1, &fm2_cmd)) g_running = 0;
+            controller[0] = c0; controller[1] = c1;
+            if (fm2_cmd & 2) {           /* hard/power reset = FCEUX PowerNES */
+                extern void ppuv_hardreset(void);
+                extern void apuv_power(void);
+                for (int i = 0; i < (int)sizeof(ram); i++) ram[i] = (i & 4) ? 0xFF : 0x00;
+                mapper_init(EMBEDDED_MAPPER_ID, EMBEDDED_PRG_BANKS,
+                            EMBEDDED_CHR_BANKS, EMBEDDED_MIRRORING);
+                ppuv_hardreset();
+                apuv_power();            /* FCEUSND_Power: full APU re-init */
+                X6502v_Power();
+            } else if (fm2_cmd & 1) {    /* soft reset = FCEUX ResetNES */
+                extern void apuv_reset(void);
+                FCEUPPU_Reset();
+                apuv_reset();            /* FCEUSND_Reset: DMCacc=1, DMCBitCount=0 */
+                x6502v_reset();
+            }
+        }
+    }
+}
+#endif /* HAVE_VENDOR */
+
+/* FM2 power/soft reset for the --interp=fceux backend, mirroring the vendored
+ * path's tick block one-for-one (PowerNES / ResetNES). Both are applied at the
+ * frame boundary from the JUST-CONSUMED record, exactly where FCEUX's
+ * FCEU_UpdateInput() sits relative to FCEUPPU_Loop — no peek-ahead and no
+ * deferral. (The old visible-first loop needed both hacks because its frame
+ * boundary sat 81840 dots away from FCEUX's; post-render-first removes them.) */
+/* X6502_Power does `memset(&X, 0, sizeof(X))`, which zeroes X.count — FCEUX's
+ * CPU↔PPU sub-frame remainder. A PowerNES therefore DISCARDS the overshoot of
+ * the last instruction of the previous frame and restarts the CPU exactly on
+ * the frame boundary. Our equivalent of X.count is g_fceux_dot's carry past
+ * frame_dots, so it has to be dropped too — but the reset is applied during the
+ * end-of-frame bookkeeping, before the carry is taken, so flag it here and let
+ * the carry line at the bottom of the frame loop honour it. X6502_Reset (soft
+ * reset) does NOT touch X.count, so fceux_soft_reset must not set this. */
+static int g_fceux_drop_carry;
+
+static void fceux_power_reset(void) {   /* FCEUX PowerNES */
+    extern void apu_fceux_power(void);
+    g_fceux_drop_carry = 1;
+    for (int i = 0; i < (int)sizeof(ram); i++) ram[i] = (i & 4) ? 0xFF : 0x00;
+    mapper_init(EMBEDDED_MAPPER_ID, EMBEDDED_PRG_BANKS,
+                EMBEDDED_CHR_BANKS, EMBEDDED_MIRRORING);
+    nes_reset();                        /* FCEUPPU_Power: regs + ppudead = 2 */
+    apu_fceux_power();                  /* FCEUSND_Power */
+    memset(&cpu, 0, sizeof(cpu));       /* X6502_Power: S = 0xFD, A/X/Y/P cleared */
+    cpu.SP = 0xFD; cpu.I = 1;
+    cpu.PC = mem_read(0xFFFC) | ((uint16_t)mem_read(0xFFFD) << 8);
+#ifdef HAVE_VENDOR
+    if (g_cpu_vendor) x6502v_power();
+#endif
+}
+static void fceux_soft_reset(void) {    /* FCEUX ResetNES */
+    extern void apu_fceux_reset(void);
+    nes_reset();                        /* FCEUPPU_Reset: ppudead = 2, kook = 0 */
+    apu_fceux_reset();                  /* FCEUSND_Reset: DMCacc = 1, DMCBitCount = 0 */
+#ifdef HAVE_VENDOR
+    if (g_cpu_vendor) x6502v_reset();
+#endif
 }
 
 static void runner_run_fceux(void) {
@@ -629,6 +829,24 @@ static void runner_run_fceux(void) {
      * lazy opacity render, so the corpus stays fast). */
     int want_video = (!g_headless || g_screenshot_path != NULL);
     g_fceux_dot = 0;
+    /* FCEUX FCEUPPU_Reset: ppudead = 2. The frame loop below is post-render-first
+     * (see the frame-structure comment), so the CPU↔PPU phase only lines up with
+     * ppuv_loop_frame when the warm-up runs the same TWO dead frames the vendor
+     * does — with one, our first VBL lands a whole frame early. Set it here so
+     * the beam backend (which is calibrated for 1) is untouched. */
+    g_ppudead = 2;
+    { extern void apu_fceux_power(void); apu_fceux_power(); }  /* FCEUSND_Power for the fceux DMC/frame timing */
+#ifdef HAVE_VENDOR
+    if (g_cpu_vendor) x6502v_power();   /* first step loads PC from $FFFC */
+#endif
+    /* FM2 record 0 carrying a power reset (|2|) is the movie's power-on marker —
+     * apply it as a real PowerNES before frame 1, like runner_run_fceux_full. */
+    if (g_fm2_first_cmd & 2) fceux_power_reset();
+    /* ...but this one happens BEFORE frame 1, where there is no carry yet
+     * (g_fceux_dot == 0). Leaving the flag armed would throw away frame 1's own
+     * legitimate overshoot instead. Only a reset applied at a frame boundary
+     * mid-movie drops a carry. */
+    g_fceux_drop_carry = 0;
     while (g_running) {
         /* FCEUX old-PPU alternates the frame length 89342/89341 via `kook`
          * (X6502_Run(16-kook); kook^=1) every NORMAL frame. Crucially, during the
@@ -637,16 +855,35 @@ static void runner_run_fceux(void) {
          * Toggling frame_odd during ppudead (as we did) put our dot-skip one frame
          * out of phase with FCEUX → NMI ±1 dot on alternating frames → ±1 churn. */
         int dead = (g_ppudead > 0);
-        int frame_dots = 262 * SL - ((!dead && ppu.frame_odd) ? 1 : 0);
+        int skip = (!dead && ppu.frame_odd) ? 1 : 0;
+        int frame_dots = 262 * SL - skip;
         /* NB: do NOT reset g_fceux_dot to 0 each frame — the last instruction of
          * a frame overshoots frame_dots; FCEUX carries that remainder in _count
          * so the CPU/PPU phase drifts across frames exactly as on hardware. We
          * carry it by subtracting frame_dots at frame end (below). */
 
-        /* MMC5 in-frame state — beam sets these in ppu_step (which the chunk loop
-         * doesn't call): in-frame begins at the pre-render line, scanline counter
-         * resets, counts per rendered visible line via mapper_scanline. */
-        if (mapper.id == 5) { mapper.m5_in_frame = 1; mapper.m5_scanline = 0; }
+        /* ---- frame structure: POST-RENDER FIRST, exactly like ppuv_loop_frame ----
+         * FCEUPPU_Loop emits one frame as
+         *     [post-render 240][vblank 241..260][pre-render 261][visible 0..239]
+         * and the movie/lag bookkeeping happens between two such calls — i.e. the
+         * frame boundary sits at the END of the visible lines, and VBL fires only
+         * 341 dots after the boundary. We used to run visible-first, which is the
+         * same 89342 dots rotated by the 81840 visible ones: the dump lined up,
+         * but the CPU reached each VBL at a different sub-instruction phase
+         * (7502 dots / ~714 instructions of warm-up offset). On roughly half the
+         * frames that straddled a churn/spin instruction, so the NMI was serviced
+         * one instruction late and timing-latched counters diverged — Contraf's
+         * $0029 churn and Battletoads' $0019 spin. Rotating to match the vendor
+         * makes the phase identical by construction. See AGENTS.md.
+         *
+         * Dot map inside one iteration (SL = 341):
+         *     [0, 341)        post-render line 240
+         *     341             VBL set, +12 → NMI
+         *     [341, 7161)     vblank lines 241..260
+         *     [7161, 7502-skip)  pre-render line 261 (odd-frame dot skip here)
+         *     [7502-skip, …)  visible lines 0..239                              */
+        int vbase = 22 * SL - skip;   /* dot of visible line 0 */
+        g_fceux_vbase = vbase;
 
         /* --speed N (live window): present 1 of every N frames. Decide up front so
          * we can skip the line render on the (N-1) frames that won't be shown. */
@@ -655,45 +892,75 @@ static void runner_run_fceux(void) {
         if (!g_headless) { show = (++speed_ctr >= g_speed); if (show) speed_ctr = 0; }
         int render = want_video && (g_headless || show);
 
-        /* ---- visible scanlines 0..239: DoLine structure ---- */
-        for (int sl = 0; sl < 240; sl++) {
-            fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
-            if (render) fceux_render_line(sl);  /* full-colour line → framebuf */
-            fceux_run_to(sl * SL + 256);   /* X6502_Run(256): visible part */
-            fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
-            /* Scanline IRQ clock. MMC3 (GameHBIRQHook): FCEUX DoLine fires it at
-             * X6502_Run(256)+6+4 = dot 266 when rendering and the two pattern
-             * tables aren't both in the upper half ((PPU[0]&0x38)!=0x18). MMC5:
-             * the in-frame line counter clocks every rendered scanline (beam uses
-             * dot 260), no PPUCTRL gate. */
-            if (mapper.id == 4) {
-                if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
-                    fceux_run_to(sl * SL + 266);
-                    mapper_scanline();
-                }
-            } else if (mapper.id == 5) {
-                if (ppu.regs[1] & 0x18) {
-                    fceux_run_to(sl * SL + 260);
-                    mapper_scanline();
-                }
-            }
-            fceux_run_to((sl + 1) * SL);   /* HBlank to next line start */
-        }
-
-        /* ---- post-render line 240, then VBL set at scanline 241 dot 0 ----
+        if (dead) {
+            /* FCEUX ppudead branch: a whole frame of CPU with no PPU events at
+             * all, and `kook` is NOT toggled (handled by skip==0 above). */
+            fceux_run_to(frame_dots);
+        } else {
+        /* ---- post-render line 240, then VBL at scanline 241 dot 0 ----
          * FCEUX FCEUPPU_Loop: X6502_Run(341) [post-render], PPU_status|=0x80,
          * X6502_Run(12), THEN TriggerNMI — i.e. NMI is delivered 12 dots after
          * the VBL flag is set, not immediately. */
-        fceux_run_to(241 * SL);
-        if (g_ppudead == 0) {
-            ppu.regs[2] |= 0x80;
-            ppu.in_vblank = 1;
-        }
-        /* MMC5: end of frame — in-frame off, scanline counter reset (beam does
-         * this at scanline 241 dot 1). */
+        fceux_run_to(SL);
+        ppu.regs[2] |= 0x80;
+        ppu.in_vblank = 1;
+        /* MMC5: end of frame — in-frame off, scanline counter reset. */
         if (mapper.id == 5) { mapper.m5_in_frame = 0; mapper.m5_scanline = 0; }
-        fceux_run_to(241 * SL + 12);
-        if (g_ppudead == 0 && (ppu.regs[0] & 0x80)) nes_nmi();
+        fceux_run_to(SL + 12);
+        if (ppu.regs[0] & 0x80) nes_nmi();
+
+        /* ---- vblank lines 241..260, then pre-render (clear status, copy_vert) ---- */
+        fceux_run_to(21 * SL + 1);
+        ppu.regs[2] &= ~0xE0;
+        ppu.in_vblank = 0;
+        /* Pre-render scanline 261 also clocks the MMC3 scanline IRQ: with
+         * rendering on the PPU does the same A12-toggling fetches as a visible
+         * line, so FCEUX clocks GameHBIRQHook 241×/frame (240 visible + this
+         * one). The visible-line loop below only does 240; without this the
+         * fceux backend under-clocks MMC3 by one every frame — invisible during
+         * IRQ-free intros but desyncs raster-split gameplay (Contraf @2907). */
+        if (mapper.id == 4) {
+            if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
+                fceux_run_to(21 * SL + 256);   /* pre-render hook = dot 256 (FCEUPPU_Loop), not 266 */
+                mapper_scanline();
+            }
+        }
+        fceux_run_to(vbase);
+        fceux_prerender();                 /* copy_vert: set up line-0 v */
+        ppu.frame_odd ^= 1;                /* phase advances only on normal frames */
+
+        /* ---- visible scanlines 0..239: DoLine structure ----
+         * MMC5 in-frame state: reset here so mapper5_hb() at the first visible
+         * line ENTERS the frame (counter 0), mirroring FCEUX (its pre-render DoLine
+         * resets, visible line 0 enters). Line 930 already reset at VBL; keep this
+         * explicit. */
+        if (mapper.id == 5) { mapper.m5_in_frame = 0; mapper.m5_scanline = 0; }
+        for (int sl = 0; sl < 240; sl++) {
+            /* MMC5 scanline IRQ — FCEUX clocks mapper5_hb() at DoLine dot 0 (line
+             * start), BEFORE the line's CPU run, no PPUCTRL gate. First rendered
+             * line enters the frame (counter 0); each later line increments and
+             * compares to $5203. mapper5_hb→nes_irq only sets g_irq_pending;
+             * fceux_run_to delivers it at the line's first instruction, exactly
+             * like FCEUX's top-of-X6502_Run IQEXT. (The old code called the
+             * MMC3-only no-op mapper_scanline() here → MMC5 IRQ never fired →
+             * Castle3 RAM diverged at frame 11.) */
+            if (mapper.id == 5) mapper5_hb(sl, ppu.regs[1] & 0x18);
+            fceux_line_begin(sl);          /* copy_hori, render BG opacity, eval s0 */
+            if (render) fceux_render_line(sl);  /* full-colour line → framebuf */
+            fceux_run_to(vbase + sl * SL + 256);   /* X6502_Run(256): visible part */
+            fceux_line_end(sl);            /* EndRL: CheckSpriteHit(272), inc_vert */
+            /* MMC3 scanline IRQ (GameHBIRQHook): FCEUX DoLine fires it at
+             * X6502_Run(256)+6+4 = dot 266 when rendering and the two pattern
+             * tables aren't both in the upper half ((PPU[0]&0x38)!=0x18). */
+            if (mapper.id == 4) {
+                if ((ppu.regs[1] & 0x18) && (ppu.regs[0] & 0x38) != 0x18) {
+                    fceux_run_to(vbase + sl * SL + 266);
+                    mapper_scanline();
+                }
+            }
+            fceux_run_to(vbase + (sl + 1) * SL);   /* HBlank to next line start */
+        }
+        }
 
         /* ---- per-frame bookkeeping — mirrors the beam frame_ready block ---- */
         g_current_frame++;
@@ -710,7 +977,8 @@ static void runner_run_fceux(void) {
             uint8_t c0 = 0, c1 = 0, fm2_cmd = 0;
             if (!fm2_tick_cmd(&c0, &c1, &fm2_cmd)) g_running = 0;
             controller[0] = c0; controller[1] = c1;
-            if (fm2_cmd & 3) nes_reset();
+            if      (fm2_cmd & 2) fceux_power_reset();   /* PowerNES */
+            else if (fm2_cmd & 1) fceux_soft_reset();    /* ResetNES */
         }
 
         /* ---- video: events + present (live window only) ---- */
@@ -743,14 +1011,9 @@ static void runner_run_fceux(void) {
             }
         }
 
-        /* ---- vblank, then pre-render (clear status, restore vertical v) ---- */
-        fceux_run_to(261 * SL + 1);
-        ppu.regs[2] &= ~0xE0;
-        ppu.in_vblank = 0;
-        fceux_run_to(frame_dots);
-        fceux_prerender();                 /* copy_vert: set up line-0 v for next */
-        if (!dead) ppu.frame_odd ^= 1;     /* phase advances only on normal frames */
-        g_fceux_dot -= frame_dots;         /* carry the instruction overshoot */
+        /* carry the instruction overshoot — unless a PowerNES just zeroed it */
+        if (g_fceux_drop_carry) { g_fceux_dot = 0; g_fceux_drop_carry = 0; }
+        else                      g_fceux_dot -= frame_dots;
     }
     /* --screenshot is saved by runner_quit() after we return (framebuf holds the
      * last rendered frame), same as the beam path. */
@@ -773,7 +1036,8 @@ void runner_run(void) {
         if (fm2_tick_cmd(&c0, &c1, &cmd)) {
             controller[0] = c0;
             controller[1] = c1;
-            if (cmd & 3) nes_reset();
+            g_fm2_first_cmd = cmd;     /* full-vendor uses this for the frame-1 reset */
+            if (cmd & 3) { nes_reset(); g_ppudead = 1; }  /* frame-1 reset == power-on warm-up (1), not +1 */
         }
         g_lag_flag = 1;   /* begin frame 1 */
     }
@@ -781,7 +1045,15 @@ void runner_run(void) {
     /* FCEUX-faithful playback backend (--interp=fceux): chunk-driven DoLine loop
      * with lazy sprite-0 render (ppu.c fceux_*). Headless demo verification only;
      * shares the FM2 pre-load above. See docs/interp-fceux-design.md. */
-    if (g_ppu_backend) { runner_run_fceux(); return; }
+    if (g_ppu_backend) {
+#ifdef HAVE_VENDOR
+        if (g_cpu_vendor) runner_run_fceux_full();
+        else              runner_run_fceux();
+#else
+        runner_run_fceux();
+#endif
+        return;
+    }
 
     while (g_running) {
 
@@ -1251,6 +1523,19 @@ int main(int argc, char **argv) {
              * Implies interp mode; selects the ported FCEUX old-PPU. */
             g_interp_mode = 1;
             g_ppu_backend = 1;
+        }
+        else if (strcmp(argv[i], "--interp=fceux_vendor") == 0) {
+            /* Same fceux PPU/loop, but drive the CPU with the vendored FCEUX
+             * x6502 core (cycle-exact oracle vs our cpu_interp). */
+#ifdef HAVE_VENDOR
+            g_interp_mode = 1;
+            g_ppu_backend = 1;
+            g_cpu_vendor  = 1;
+#else
+            fprintf(stderr, "--interp=fceux_vendor: built without the GPL FCEUX vendor "
+                            "oracle (nogpl/ absent). Rebuild with nogpl/ present to enable it.\n");
+            return 1;
+#endif
         }
         else if (strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
             g_frame_hash_file = fopen(argv[++i], "w");

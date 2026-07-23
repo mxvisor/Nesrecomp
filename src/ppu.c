@@ -112,10 +112,11 @@ static void vram_write(uint16_t addr, uint8_t val) {
    ========================================================================= */
 uint8_t ppu_read(uint8_t reg) {
     if (g_ppu_backend) {
-        /* fceux chunk-driven backend: no per-dot beam. A $2002 read triggers
+        /* fceux chunk-driven backend: no per-dot beam. EVERY $200x read triggers
          * FCEUX's lazy LineUpdate — render/sprite-0-check only up to this read's
-         * exact dot (lastpixel). See fceux_on_2002_read() and runner_run_fceux. */
-        if ((reg & 7) == 2) fceux_on_2002_read();
+         * exact dot (lastpixel). FCEUX hooks all four read cases (2, 4, 7 and the
+         * open-bus default). See fceux_line_update() and runner_run_fceux. */
+        fceux_line_update();
     } else {
         /* beam: FCEUX-style catch-up to this read's CPU cycle (interp mode arms
          * g_ppu_catchup_dots = base_cycles*3) so a $2002 poll observes the PPU
@@ -163,12 +164,28 @@ uint8_t ppu_read(uint8_t reg) {
 }
 
 void ppu_write(uint8_t reg, uint8_t val) {
+    /* FCEUX renders the line so far BEFORE the write lands, for every register
+     * whose new value changes the rest of the line ($2000/$2001/$2005/$2006/$2007
+     * — not $2002/$2003/$2004). This is what turns a mid-line write into a raster
+     * split instead of a retroactive repaint of the whole scanline. */
+    if (g_ppu_backend) {
+        switch (reg & 7) {
+        case 0: case 1: case 5: case 6: case 7: fceux_line_update(); break;
+        default: break;
+        }
+    }
+    uint8_t old_ctrl = ppu.regs[0];
     ppu.open_bus = val;
     ppu.regs[reg & 7] = val;
     switch (reg & 7) {
     case 0:
         ppu.t_addr = (ppu.t_addr & ~0x0C00) | ((uint16_t)(val & 3) << 10);
-        if ((val & 0x80) && (ppu.regs[2] & 0x80))
+        /* NMI fires only on the 0->1 EDGE of the NMI-enable bit while the VBL flag
+         * is set — FCEUX B2000: `!(old&0x80) && (V&0x80) && (PPU_status&0x80)`.
+         * Without the edge test, a $2000 write with bit7 already 1 spuriously
+         * re-fires the NMI (Adventure frame 7: an extra NMI mid-vblank shifted all
+         * sub-frame timing → RAM-hash divergence from the FCEUX oracle). */
+        if (!(old_ctrl & 0x80) && (val & 0x80) && (ppu.regs[2] & 0x80))
             nes_nmi();
         break;
     case 1:
@@ -502,41 +519,124 @@ static int      fc_cur_line = -1;
 static int32_t  fc_sphitx;       /* sprite-0 left X on the line, 0x100 = none */
 static uint8_t  fc_sphitdata;    /* non-transparent pixel mask, MSB=leftmost,
                                     already horizontally flipped if needed */
+/* Incremental render cursor (FCEUX firsttile / Pline / pshift[]). fc_pshift* hold
+ * the last four fetched pattern bytes and deliberately persist across lines. */
+static int      fc_firsttile;    /* next tile column to fetch */
+static int      fc_px;           /* screen x of the next emitted pixel */
+static uint32_t fc_pshift0, fc_pshift1;
+static int      fc_tofix;        /* FCEUX tofix: inc_vert still owed for this line */
+
+#define FC_TOFIXNUM (272 - 4)
+
+static void fceux_check_sprite0(int lastpixel);
+
+/* FCEUX Fixit1 = inc_vert, gated on rendering being enabled. */
+static void fceux_fixit1(void) {
+    if (ppu.regs[1] & 0x18) inc_vert_v();
+}
 
 static uint8_t fc_reverse8(uint8_t b) {
     return (uint8_t)(((b * 0x80200802ULL) & 0x0884422110ULL) * 0x0101010101ULL >> 32);
 }
 
-/* Render the BG opacity (pattern != 0) for visible line sl into fc_bgopac, using
- * the loopy v at line start (mirrors RefreshLine's smorkus local walk). */
-static void fceux_render_bg_opacity(void) {
-    for (int i = 0; i < 256; i++) fc_bgopac[i] = 0;
-    if (!(ppu.regs[1] & 0x08)) return;                 /* BG disabled */
+/* FCEUX RefreshLine(lastpixel): render the BG opacity for the tile columns that
+ * have become visible since the last call, advancing ppu.v_addr (FCEUX's
+ * RefreshAddr, written back at the end) and the two-tile pattern pipeline as it
+ * goes.  This runs LAZILY — at every $2002 read and once more at EndRL(272) — so
+ * a mid-line write to mirroring / $2000 / $2001 changes only the tiles rendered
+ * after it.  Rendering the whole line up front instead makes such a write apply
+ * retroactively to the entire line (Battletoads flips AxROM single-screen
+ * mirroring mid-frame), and leaves v_addr un-advanced for a mid-line $2007.
+ *
+ * Pixels are emitted only for X1 >= 2: that is the two-tile fetch delay, so at
+ * lastpixel only pixels below (lasttile-2)*8 are ready — which is exactly where
+ * fceux_check_sprite0's "-16" comes from. */
 
-    mapper.m5_bg_chr = 1;                               /* MMC5: select BG CHR banks */
-    uint16_t v       = ppu.v_addr;
-    uint16_t pt_base = (ppu.regs[0] & 0x10) ? 0x1000 : 0x0000;
-    int      x       = 0;
-    int      startbit = ppu.fine_x;
+static void fceux_refresh_line(int lastpixel) {
+    if (fc_cur_line < 0) return;
 
-    while (x < 256) {
-        uint16_t nt_addr = 0x2000 | (v & 0x0FFF);
-        uint8_t  tile    = vram_read(nt_addr);
-        uint8_t  fine_y  = (v >> 12) & 7;
-        uint8_t  lo      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y);
-        uint8_t  hi      = vram_read(pt_base + (uint16_t)tile * 16 + fine_y + 8);
-        for (int bit = startbit; bit < 8 && x < 256; bit++) {
-            uint8_t p = ((lo >> (7 - bit)) & 1) | (((hi >> (7 - bit)) & 1) << 1);
-            fc_bgopac[x++] = p ? 1 : 0;
-        }
-        startbit = 0;
-        /* inc hori v */
-        if ((v & 0x001F) == 31) { v &= ~0x001F; v ^= 0x0400; } else v++;
+    int lasttile = lastpixel >> 3;
+    /* Render one extra tile while a sprite-0 hit is still pending, so the hit
+     * test never runs ahead of the BG it is compared against. */
+    if (fc_sphitx != 0x100 && !(ppu.regs[2] & 0x40)) {
+        if (fc_sphitx < lastpixel - 16 && !(fc_sphitx < (lasttile - 2) * 8))
+            lasttile++;
+    }
+    if (lasttile > 34) lasttile = 34;
+    int numtiles = lasttile - fc_firsttile;
+    if (numtiles <= 0) return;
+
+    int bg  = ppu.regs[1] & 0x08;               /* ScreenON */
+    int spr = ppu.regs[1] & 0x10;               /* SpriteON */
+
+    if (!bg && !spr) {
+        /* Rendering fully off: backdrop, and no fetches — v_addr does NOT move.
+         * FCEUX advances its pixel cursor by numtiles*8 here, ignoring the
+         * X1 >= 2 rule; mirror that. */
+        for (int i = 0; i < numtiles * 8 && fc_px < 256; i++) fc_bgopac[fc_px++] = 0;
+        fc_firsttile = lasttile;
+        if (lastpixel >= FC_TOFIXNUM && fc_tofix) { fceux_fixit1(); fc_tofix = 0; }
+        return;
     }
 
-    /* BG left-column clip (PPUMASK bit1 = 0 → leftmost 8 px hidden) */
-    if (!(ppu.regs[1] & 0x02))
+    mapper.m5_bg_chr = 1;                       /* MMC5: BG fetches use BG CHR banks */
+    uint16_t ra   = ppu.v_addr;
+    uint16_t ptb  = (ppu.regs[0] & 0x10) ? 0x1000 : 0x0000;
+    int      xoff = ppu.fine_x;                 /* FCEUX XOffset, sampled per call */
+
+    for (int X1 = fc_firsttile; X1 < lasttile; X1++) {
+        if (X1 >= 2) {
+            uint8_t opac = (uint8_t)(((fc_pshift0 | fc_pshift1) >> (8 - xoff)) & 0xFF);
+            for (int i = 0; i < 8 && fc_px < 256; i++)
+                fc_bgopac[fc_px++] = (opac >> (7 - i)) & 1;
+        }
+        uint16_t vadr = ptb + (uint16_t)(vram_read(0x2000 | (ra & 0x0FFF)) * 16)
+                      + ((ra >> 12) & 7);
+        fc_pshift0 = (fc_pshift0 << 8) | vram_read(vadr);
+        fc_pshift1 = (fc_pshift1 << 8) | vram_read(vadr + 8);
+        if ((ra & 0x1F) == 0x1F) ra ^= 0x041F; else ra++;
+    }
+    ppu.v_addr = ra;                            /* RefreshAddr = smorkus */
+
+    /* BG off but sprites on: the fetches still happened (v_addr moved), but the
+     * pixels they produced are backdrop. */
+    if (!bg)
+        for (int i = (fc_firsttile - 2) * 8; i < (lasttile - 2) * 8; i++)
+            if (i >= 0 && i < 256) fc_bgopac[i] = 0;
+
+    /* BG left-column clip (PPUMASK bit1 = 0 → leftmost 8 px hidden), applied on
+     * the call that renders the tile carrying x = 0..7. */
+    if (fc_firsttile <= 2 && 2 < lasttile && !(ppu.regs[1] & 0x02))
         for (int i = 0; i < 8; i++) fc_bgopac[i] = 0;
+
+    /* FCEUX fires inc_vert here — on the FIRST line update at/after lastpixel 268,
+     * not at EndRL — so the line's last tile (screen x 248..255) is fetched with
+     * fine_y already advanced. Only observable because the render is incremental. */
+    if (lastpixel >= FC_TOFIXNUM && fc_tofix) { fceux_fixit1(); fc_tofix = 0; }
+
+    fceux_check_sprite0(lastpixel);
+    fc_firsttile = lasttile;
+}
+
+/* FCEUX FCEUPPU_LineUpdate(): resolve the CPU's current dot into a lastpixel for
+ * the line in progress and render up to it.  FCEUX calls this from every PPU
+ * register access that can change how the rest of the line looks — reads of
+ * $2002/$2004/$2007 (and open-bus $200x), writes of $2000/$2001/$2005/$2006/$2007
+ * — which is what makes a mid-line write a raster split rather than a retroactive
+ * repaint of the whole line. */
+void fceux_line_update(void) {
+    extern int g_fceux_dot, g_ppu_catchup_dots, g_fceux_vbase;
+    if (fc_cur_line < 0 || fc_cur_line >= 240) return;
+    /* g_fceux_dot counts from the top of the frame, which is the POST-RENDER line
+     * — visible line 0 starts at g_fceux_vbase, so rebase before splitting into
+     * (scanline, pixel). Without this the sl check never matches and sprite-0
+     * hits are only seen at EndRL, one poll iteration late (Battletoads @1708). */
+    int d = g_fceux_dot + g_ppu_catchup_dots - g_fceux_vbase;
+    /* FCEUX starts a line's pixel clock at ResetRL, which DoLine calls 16 dots
+     * BEFORE the nominal scanline boundary (`... ResetRL(); X6502_Run(16);`), so
+     * GETLASTPIXEL runs 16 ahead of our nominal dot. */
+    int px = d - fc_cur_line * 341 + 16;
+    if (px > 0) fceux_refresh_line(px);
 }
 
 /* Compute sprite-0 sphitx/sphitdata for visible line sl (equivalent to FCEUX
@@ -585,13 +685,6 @@ static void fceux_check_sprite0(int lastpixel) {
     }
 }
 
-void fceux_on_2002_read(void) {
-    extern int g_fceux_dot, g_ppu_catchup_dots;
-    int d  = g_fceux_dot + g_ppu_catchup_dots;
-    int sl = d / 341, px = d % 341;
-    if (sl == fc_cur_line && sl < 240)
-        fceux_check_sprite0(px);
-}
 
 void fceux_prerender(void) {
     if (ppu.regs[1] & 0x18) copy_vert_v();   /* restore vertical v for line 0 */
@@ -600,14 +693,20 @@ void fceux_prerender(void) {
 void fceux_line_begin(int sl) {
     if (ppu.regs[1] & 0x18) copy_hori_v();   /* horizontal scroll for this line */
     fc_cur_line = sl;
-    fceux_render_bg_opacity();
+    /* ResetRL: blank the line and rewind the render cursor. Nothing is drawn
+     * here — the line is rendered lazily by fceux_refresh_line(). */
+    for (int i = 0; i < 256; i++) fc_bgopac[i] = 0;
+    fc_firsttile = 0;
+    fc_px        = 0;
+    fc_tofix     = 1;                        /* ResetRL arms the inc_vert latch */
     fceux_eval_sprite0(sl);
 }
 
 void fceux_line_end(int sl) {
     (void)sl;
-    fceux_check_sprite0(272);                 /* EndRL */
-    if (ppu.regs[1] & 0x18) inc_vert_v();     /* advance to next line's row */
+    fceux_refresh_line(272);                  /* EndRL: finish the line */
+    if (fc_tofix) { fceux_fixit1(); fc_tofix = 0; }   /* not latched mid-line */
+    fceux_check_sprite0(272);
     fc_cur_line = -1;
 }
 
