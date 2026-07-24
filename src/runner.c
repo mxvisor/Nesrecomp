@@ -22,6 +22,9 @@ static int g_headless = 0;
 static int g_seconds  = 30;
 static uint32_t g_run_until = 0;
 
+/* --verbose: print the active configuration (backend, mapper, I/O) at startup */
+static int g_verbose = 0;
+
 /* Interpreter mode — use cpu_interp_step instead of recompiled dispatch */
 static int g_interp_mode = 0;
 
@@ -1469,6 +1472,123 @@ void runner_quit(void) {
 }
 
 /* =========================================================================
+   CLI help + verbose banner
+   ========================================================================= */
+
+/* Human-readable name of the active execution backend (see the --interp flags). */
+static const char *backend_name(void) {
+    if (g_cpu_vendor)  return "fceux_vendor (vendored FCEUX x6502 + FCEUX PPU)";
+    if (g_ppu_backend) return "fceux (cpu_interp + FCEUX PPU)";
+    if (g_interp_mode) return "beam (cpu_interp + beam-accurate PPU)";
+    return "recompiled (static dispatch + beam-accurate PPU)";
+}
+
+static const char *mapper_name(int id) {
+    switch (id) {
+        case 0: return "NROM";
+        case 1: return "MMC1";
+        case 2: return "UNROM";
+        case 3: return "CNROM";
+        case 4: return "MMC3";
+        case 5: return "MMC5";
+        case 7: return "AxROM";
+        default: return "unknown";
+    }
+}
+
+static const char *mirror_name(int m) {
+    switch (m) {
+        case 0: return "horizontal";
+        case 1: return "vertical";
+        case 2: return "4-screen";
+        case 3: return "single-screen A";
+        case 4: return "single-screen B";
+        default: return "?";
+    }
+}
+
+static void print_usage(const char *prog) {
+    printf(
+"NESRecomp — recompiled NES binary for \"%s\"\n"
+"Usage: %s [options] [rom.nes]\n"
+"\n"
+"The ROM is embedded in this binary; the optional [rom.nes] argument is accepted\n"
+"for compatibility but ignored. With no options the game runs in a window.\n"
+"\n"
+"General:\n"
+"  -h, --help              Show this help and exit\n"
+"  -v, --verbose           Print the active configuration at startup (see below)\n"
+"\n"
+"Display / timing:\n"
+"      --scale N           Integer window scale factor (default 1)\n"
+"      --speed N           Emulate N frames per shown frame — fast-forward (default 1)\n"
+"      --headless          Run without a window (no video/audio)\n"
+"      --seconds N         Headless: stop after N seconds of wall-clock (default 30)\n"
+"      --frames N          Stop after N emulated frames (0 = unlimited)\n"
+"\n"
+"Execution backend (default: recompiled static dispatch + beam-accurate PPU):\n"
+"      --interp            Beam-accurate interpreter (alias of --interp=beam)\n"
+"      --interp=beam       Beam-accurate interpreter  (cpu_interp + beam PPU)\n"
+"      --interp=fceux      FCEUX-faithful interpreter (cpu_interp + FCEUX PPU)\n"
+#ifdef HAVE_VENDOR
+"      --interp=fceux_vendor  Vendored FCEUX x6502 oracle (cycle-exact reference)\n"
+#else
+"      --interp=fceux_vendor  (unavailable — built without the GPL nogpl/ oracle)\n"
+#endif
+"\n"
+"Input / capture:\n"
+"      --playback FILE     Play an FCEUX .fm2 TAS movie (hermetic clean power-on)\n"
+"      --screenshot FILE   Save a PNG screenshot at exit\n"
+"      --dump-frames FILE  Headless: write per-frame CRC32 to FILE\n"
+"      --dump-sync FILE    Headless: write \"frame lag lagcount ram-hash\" per VBL\n"
+"\n"
+"Runtime keys (windowed mode):\n"
+"  Arrows = D-pad   Z = A   X = B   RShift = Select   Enter = Start\n"
+"  F5 = save state  F8 = load state  F11 = fullscreen  Tab = widescreen\n"
+"  F12 = screenshot  Esc = quit\n",
+        GAME_NAME, prog);
+}
+
+/* Print the resolved configuration once, after runner_init() (mapper is known). */
+static void print_verbose_banner(const char *rom_path,
+                                 const char *playback_path) {
+    fprintf(stderr, "[runner] NESRecomp — game \"%s\"\n", GAME_NAME);
+    fprintf(stderr, "[runner]   backend : %s\n", backend_name());
+    if (mapper.chr_banks)
+        fprintf(stderr, "[runner]   mapper  : %d (%s)  PRG=%dx16KB  CHR=%dx8KB  mirror=%s\n",
+                mapper.id, mapper_name(mapper.id), mapper.prg_banks,
+                mapper.chr_banks, mirror_name(mapper.mirroring));
+    else
+        fprintf(stderr, "[runner]   mapper  : %d (%s)  PRG=%dx16KB  CHR-RAM  mirror=%s\n",
+                mapper.id, mapper_name(mapper.id), mapper.prg_banks,
+                mirror_name(mapper.mirroring));
+    if (g_headless)
+        fprintf(stderr, "[runner]   video   : headless (no window/audio)\n");
+    else
+        fprintf(stderr, "[runner]   video   : windowed, scale %dx\n", g_scale);
+    fprintf(stderr, "[runner]   speed   : %dx   frame-limit: %s",
+            g_speed, g_frame_limit ? "" : "unlimited");
+    if (g_frame_limit) fprintf(stderr, "%u", g_frame_limit);
+    if (g_headless) fprintf(stderr, "   seconds: %d", g_seconds);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[runner]   playback: %s   hermetic=%s\n",
+            playback_path ? playback_path : "none", g_hermetic ? "yes" : "no");
+    if (g_screenshot_path || g_sync_file || g_frame_hash_file)
+        fprintf(stderr, "[runner]   outputs : screenshot=%s  dump-sync=%s  dump-frames=%s\n",
+                g_screenshot_path ? g_screenshot_path : "-",
+                g_sync_file ? "on" : "-",
+                g_frame_hash_file ? "on" : "-");
+#ifdef HAVE_VENDOR
+    fprintf(stderr, "[runner]   build   : HAVE_VENDOR=yes\n");
+#else
+    fprintf(stderr, "[runner]   build   : HAVE_VENDOR=no\n");
+#endif
+    if (rom_path)
+        fprintf(stderr, "[runner]   note    : positional ROM \"%s\" ignored (embedded)\n",
+                rom_path);
+}
+
+/* =========================================================================
    main
    ========================================================================= */
 
@@ -1498,7 +1618,13 @@ int main(int argc, char **argv) {
     const char *playback_path = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--headless") == 0)
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0)
+            g_verbose = 1;
+        else if (strcmp(argv[i], "--headless") == 0)
             g_headless = 1;
         else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
             g_seconds = atoi(argv[++i]);
@@ -1549,6 +1675,8 @@ int main(int argc, char **argv) {
             g_frame_limit = (uint32_t)atoi(argv[++i]);
         else if (argv[i][0] != '-')
             rom_path = argv[i];
+        else
+            fprintf(stderr, "[runner] unknown option '%s' (try --help)\n", argv[i]);
     }
 
     /* Hermetic: playback or lag/frame dumps must start from a clean power-on
@@ -1562,6 +1690,9 @@ int main(int argc, char **argv) {
 
     if (!runner_init("NESRecomp", rom_path))
         return 1;
+
+    if (g_verbose)
+        print_verbose_banner(rom_path, playback_path);
 
     runner_run();
 
