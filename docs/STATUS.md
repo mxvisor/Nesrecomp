@@ -41,6 +41,26 @@ Last measured only with the old framebuffer-hash metric — see
 Indications of recompiler code-gen bugs (recomp ≪ interp): **Battlecity** (divergence from
 frame ~12604) and **Battletoads**. Not yet re-measured with the lag/RAM metric.
 
+## Found by the differential test (`tests/test_cpu_diff.py`, 2026-09-27)
+
+Bugs in `src/cpu_interp.c` (shared by all backends — fix, then run `make test`
+**and** `tools/verify_all.sh` locally):
+
+- **Zero-page pointer wrap:** `rd16()` fetches the high byte of a `(zp,X)` / `(zp),Y`
+  pointer at `$FF` from `$0100` instead of `$00`. Hardware and FCEUX (`GetIX`/`GetIY`)
+  wrap; the emitter's `izx_addr`/`izy_addr` wrap. Test: `test_zero_page_pointer_wraps`
+  (expected failure).
+- **LAX abs,Y (`$BF`)** has a flat 4 cycles; missing the +1 page-cross penalty.
+- **14 illegal opcodes not implemented** (fall to "skip 1 byte, 2 cycles"): ANC `$0B/$2B`,
+  ALR `$4B`, ARR `$6B`, XAA `$8B`, AHX `$93/$9F`, TAS `$9B`, SHY `$9C`, SHX `$9E`,
+  LAX #imm `$AB`, LAR `$BB`, SBX `$CB`, SBC #imm `$EB`. The emitter implements them.
+
+Likely missing page-cross penalties in **both** emitter and interpreter (hardware
+tables; check FCEUX before changing — it is the sync reference): LAX (zp),Y `$B3`,
+LAR abs,Y `$BB`, NOP abs,X `$1C/$3C/$5C/$7C/$DC/$FC`.
+
+Cosmetic (emitter): the STP comment prints a literal `${pc:04X}` (doubled braces in the f-string).
+
 ## Open problems / next steps
 
 Ordered roughly by priority.
@@ -64,6 +84,7 @@ both predate the unified FM2 timing and the fceux backend, where Mermaid is now 
 
 ## Recently done
 
+- 2026-09-27 — Test suite for the recompiler (`make test`, 36 tests, synthetic ROMs) incl. differential test emitter vs interpreter; found the `cpu_interp.c` bugs listed above.
 - 2026-09-27 — Docs audited against code: fixed stale claims (bugs 1.4/1.5 done, bank-aware UNROM/AxROM done, `--interp=fceux` implemented, PPU dot offsets, interpreter-fallback strategy, file paths, CLI/keys).
 - 2026-09-27 — Added `debug-desync` skill (`.claude/skills/`).
 - 2026-09-27 — Docs restructured: `AGENTS.md` slimmed; status → `docs/STATUS.md`; logs → `docs/investigations/`; ADRs → `docs/decisions/`.

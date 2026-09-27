@@ -143,7 +143,7 @@ CLEAN_CMD = $(if $(filter Linux,$(UNAME_S)),\
 #  Targets
 # ============================================================
 
-.PHONY: all help roms compile clean recomp dirs gen_embed parse_asm discover
+.PHONY: all help roms compile clean recomp dirs gen_embed parse_asm discover test
 
 all:
 ifeq ($(GAME),)
@@ -159,6 +159,7 @@ help:
 	@echo "  make compile GAME=MyGame    — compile only (skip recomp)"
 	@echo "  make discover GAME=MyGame   — run static recompiler only"
 	@echo "  make clean   GAME=MyGame    — remove build artifacts"
+	@echo "  make test                   — run the recompiler test suite (no ROMs needed)"
 	@echo ""
 	@echo "Options:"
 	@echo "  ROM=path/to/game.nes        — override ROM path (default: rom/GAME.nes)"
@@ -246,6 +247,10 @@ ifneq ($(INTERP),1)
 	$(MAKE) discover  GAME=$(GAME) ASM=$(ASM) ROM=$(ROM) ORPHAN=$(ORPHAN)
 endif
 	$(MAKE) compile   GAME=$(GAME) INTERP=$(INTERP)
+
+# Tests — synthetic ROMs only (tests/); the differential test needs gcc
+test:
+	$(PYTHON) -m unittest discover -s tests -v
 
 # Clean
 clean:

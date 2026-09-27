@@ -6,7 +6,8 @@
 - **Code comments**: always in English
 - **AGENTS.md / README**: English
 - **Commits**: never commit without explicit user confirmation
-- **After every change to `tools/nesrecomp.py`**: run a full recompile + build on a real ROM before continuing. Do not proceed to the next task until the build is clean. Example:
+- **After every change to `tools/nesrecomp.py` or `src/cpu_interp.c`**: run `make test` (no ROMs needed; see "Tests").
+- **After every change to `tools/nesrecomp.py`**: also run a full recompile + build on a real ROM before continuing. Do not proceed to the next task until the build is clean. Example:
   ```bash
   make GAME=Battle
   ```
@@ -291,6 +292,24 @@ ROM
  └─ discover   ← cfg/NesGame.cfg
                → generated/NesGame_full.c + NesGame_dispatch.c
 ```
+
+---
+
+## Tests
+
+```bash
+make test        # = python3 -m unittest discover -s tests -v
+```
+
+Synthetic ROMs only — runs anywhere, including cloud sessions without `rom/`.
+
+| File | Covers |
+|------|--------|
+| `tests/test_discovery.py` | iNES parsing, BFS (JSR/branch/JMP/indirect tables), `inline_data_func`, `data_region`, orphan phase, cfg parsing |
+| `tests/test_emit.py` | Cycle/page-cross/branch emission, `tick_ppu_apu()` placement, dispatch, UNROM/AxROM per-bank code, CLI end-to-end, OPTABLE cycles == `cpu_base_cycles[]` |
+| `tests/test_cpu_diff.py` + `tests/c/cpu_diff.c` | **Differential test:** every opcode's emitted C vs `cpu_interp_step()` from the same random CPU/RAM state (registers, flags, RAM, cycles, PC). Needs gcc; links `src/` without `runner.c`/SDL. |
+
+Known interpreter gaps are listed in `KNOWN` in `tests/test_cpu_diff.py` (with reasons) and in `docs/STATUS.md`; a known bug with a pending fix is an `@unittest.expectedFailure` test. When you fix one, remove its entry — an "unexpected success" means the entry is stale.
 
 ---
 
