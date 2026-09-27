@@ -47,11 +47,11 @@ The main loop in `runner.c` is **yield-based**, not a tight interpreter loop:
 4. Step APU: `apu_step()` called 1× per accumulated CPU cycle
 5. On scanline 241 (VBlank): render frame, flush audio
 
-Every recompiled function ends with `return` after each control-flow instruction (JMP, JSR, branch taken, RTS, RTI), yielding back to the main loop. Before a timing-sensitive access (reads/writes of `$2000-$3FFF`, `$4000-$401F`, writes to `$8000+` — see `is_sensitive_access()`) the emitter inserts `tick_ppu_apu()` so PPU/APU catch up to the access.
+A recompiled function runs straight-line code and returns at the first control-flow instruction (JMP, JSR, branch taken, RTS, RTI, BRK), yielding back to the main loop — so the yield granularity is a **basic block, not an instruction**. NMI/IRQ are only taken between yields: in dispatch mode an interrupt can be serviced up to one block later than under `--interp`, so recompiled and interpreted runs are **not** bit-identical even on trivial programs (measured with `tools/ci_smoke.sh`'s ROM: RAM hash differs on ~2/3 of frames). Before a timing-sensitive access (reads/writes of `$2000-$3FFF`, `$4000-$401F`, writes to `$8000+` — see `is_sensitive_access()`) the emitter inserts `tick_ppu_apu()` so PPU/APU catch up to the access.
 
 `--interp` / `--interp=fceux` replace step 2 with `cpu_interp_step()`; the fceux backend uses its own chunked loop (`runner_run_fceux`, `cpu_interp_run_cycles`).
 
-> **Planned change:** instruction-granularity yield negates most of the recompilation speedup (the yield cost replaces the interpreter's dispatch cost). The target architecture is **block-boundary yield** with catch-up, breaking blocks only at control flow and timing-sensitive accesses. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Its prerequisite — exact per-instruction cycle counts (bugs 1.4/1.5: page-cross and taken-branch penalties) — is already implemented in the emitter and in `cpu_interp.c`. Full design + checklist: `next-features.md` (external).
+> **Planned change:** the target architecture is **block-boundary yield with catch-up**: keep yielding only at control flow and timing-sensitive accesses (as today), but make observable timing — including the interrupt point — equivalent to per-instruction execution. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Its prerequisite — exact per-instruction cycle counts (bugs 1.4/1.5: page-cross and taken-branch penalties) — is already implemented in the emitter and in `cpu_interp.c`. Full design + checklist: `next-features.md` (external).
 
 ---
 
@@ -302,6 +302,13 @@ make test        # = python3 -m unittest discover -s tests -v
 ```
 
 Synthetic ROMs only — runs anywhere, including cloud sessions without `rom/`.
+
+```bash
+tools/ci_smoke.sh   # needs SDL2 dev: builds a synthetic ROM through the whole pipeline
+                    # (normal + INTERP=1), runs recompiled / --interp / --interp=fceux headless
+```
+
+CI (`.github/workflows/ci.yml`) runs `make test` and `tools/ci_smoke.sh` on every push and PR.
 
 | File | Covers |
 |------|--------|

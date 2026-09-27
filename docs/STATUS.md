@@ -61,6 +61,21 @@ LAR abs,Y `$BB`, NOP abs,X `$1C/$3C/$5C/$7C/$DC/$FC`.
 
 Cosmetic (emitter): the STP comment prints a literal `${pc:04X}` (doubled braces in the f-string).
 
+## Found while building the CI smoke test (2026-09-27)
+
+- **Recompiled vs `--interp` differ on interrupt timing.** On the smoke ROM
+  (`INC $10; JMP loop` + NMI handler) the `--dump-sync` RAM hash differs on 399/600
+  frames between dispatch mode and `--interp`: a recompiled function runs a whole
+  block before the main loop checks NMI, the interpreter checks after every
+  instruction. Likely relevant to "recomp ≪ interp" on Battlecity/Battletoads.
+  Next: measure how far the counter drifts; decide on interrupt catch-up inside blocks.
+- **Orphan phase is quadratic on 1-byte-terminator padding.** Every `$00` (BRK) —
+  or `$02`-class STP — padding byte becomes its own "function", one per pass:
+  1 KB of `$00` → 0.25 s / 1034 functions, 4 KB → 3.9 s / 4106 functions. Real ROMs
+  with zero padding get thousands of bogus functions and slow `discover`.
+  Fix idea: stop the orphan scan on runs of the same terminator byte, or treat
+  BRK-only islands as data.
+
 ## Open problems / next steps
 
 Ordered roughly by priority.
@@ -84,6 +99,7 @@ both predate the unified FM2 timing and the fceux backend, where Mermaid is now 
 
 ## Recently done
 
+- 2026-09-27 — CI: GitHub Actions runs `make test` + `tools/ci_smoke.sh` (synthetic ROM, full pipeline, all backends, GPL-free check).
 - 2026-09-27 — Test suite for the recompiler (`make test`, 36 tests, synthetic ROMs) incl. differential test emitter vs interpreter; found the `cpu_interp.c` bugs listed above.
 - 2026-09-27 — Docs audited against code: fixed stale claims (bugs 1.4/1.5 done, bank-aware UNROM/AxROM done, `--interp=fceux` implemented, PPU dot offsets, interpreter-fallback strategy, file paths, CLI/keys).
 - 2026-09-27 — Added `debug-desync` skill (`.claude/skills/`).
