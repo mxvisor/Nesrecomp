@@ -64,6 +64,7 @@ both predate the unified FM2 timing and the fceux backend, where Mermaid is now 
 
 ## Recently done
 
+- 2026-09-27 — Added `debug-desync` skill (`.claude/skills/`).
 - 2026-09-27 — Docs restructured: `AGENTS.md` slimmed; status → `docs/STATUS.md`; logs → `docs/investigations/`; ADRs → `docs/decisions/`.
 - `runner`: `--help` / `--verbose`; vendor `.o` linkage fix in non-INTERP build.
 - 2026-07-23 — GPL FCEUX oracle de-vendored into gitignored `nogpl/`; tree builds GPL-free.

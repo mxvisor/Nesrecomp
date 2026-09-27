@@ -10,6 +10,7 @@
   ```bash
   make GAME=Battle
   ```
+- **ROMs / demos are local-only**: `rom/`, `fm2/`, `asm/`, `lags/` are gitignored. In cloud sessions they are absent — do not try to build real games or run `tools/verify_all.sh`, and never invent accuracy numbers; limit yourself to code and docs, and say what needs a local run.
 - **Docs layout**: see "Documentation Map & Session Workflow" at the end of this file. Keep this file short — it is loaded into every agent session. Status goes to `docs/STATUS.md`, investigation logs to `docs/investigations/`.
 
 ---
@@ -395,7 +396,7 @@ During `--playback` / `--dump-sync` / `--dump-frames` SRAM is **hermetic** (neve
 
 ## Demo Sync — Essentials
 
-Full methodology (read before debugging any desync): [`docs/sync-methodology.md`](docs/sync-methodology.md).
+Full methodology (read before debugging any desync): [`docs/sync-methodology.md`](docs/sync-methodology.md). Step-by-step procedure: [`.claude/skills/debug-desync/SKILL.md`](.claude/skills/debug-desync/SKILL.md).
 
 - **Metrics, in priority order:** (1) lag sequence / cumulative lag drift — the sync verdict; (2) RAM hash `$0000-$07FF` — tightening metric; (3) framebuffer hash — cosmetic only.
 - **One command:** `tools/verify_all.sh [GAME]` (`REBUILD=0` skips make, `FCEUX=0` uses cached refs only).
@@ -417,6 +418,7 @@ Full methodology (read before debugging any desync): [`docs/sync-methodology.md`
 | [`docs/investigations/`](docs/investigations/) | Dated investigation logs: hypotheses, measurements, refutations, methods that worked. |
 | [`docs/decisions/`](docs/decisions/) | ADRs — short "decided X because Y, rejected Z" records. |
 | `docs/*.md` | Reference & design docs (methodology, FCEUX Lua, bug checklist, verification, designs). |
+| `.claude/skills/` | Step-by-step procedures loaded on demand (e.g. `debug-desync`). |
 
 **Session workflow:**
 1. **Start:** read `docs/STATUS.md`; before touching a subsystem, read the matching investigation log (e.g. Battletoads → `docs/investigations/battletoads.md`) so you do not re-derive refuted hypotheses.
