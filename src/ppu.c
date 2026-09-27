@@ -508,7 +508,7 @@ void ppu_run(int clocks) {
    FCEUX-faithful chunk-driven backend (--interp=fceux)
    -------------------------------------------------------------------------
    Ports FCEUX's old-PPU lazy render for sprite-0-hit timing (the residual that
-   the beam+catch-up could not match — see AGENTS.md AxROM section). No per-dot
+   the beam+catch-up could not match — see docs/investigations/battletoads.md). No per-dot
    beam: BG opacity is computed once per visible line (loopy v at line start) and
    the sprite-0 hit is checked LAZILY only at $2002 reads (lastpixel) and at line
    end (EndRL CheckSpriteHit(272)) — exactly FCEUX. This reproduces the tight

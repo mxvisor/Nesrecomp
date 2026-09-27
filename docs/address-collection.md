@@ -112,7 +112,7 @@ area). It still executes *valid* code, but it stops reaching the **new** content
 that would yield new addresses. So better demo sync → the playthrough reaches
 the real ending → maximal addresses per demo.
 
-This is the practical payoff of the lag-sync work (see AGENTS.md
+This is the practical payoff of the lag-sync work (see docs/sync-methodology.md
 "Synchronization Methodology"): with the unified FM2 timing model the test
 demos play in sync deep into / through their playthroughs, so a single demo
 collects far more of the game than a demo that desynced in the first seconds.

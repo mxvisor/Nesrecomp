@@ -606,7 +606,7 @@ int runner_init(const char *title, const char *rom_path) {
    FCEUX-faithful chunk-driven playback backend (--interp=fceux). Headless demo
    verification only. Mirrors FCEUX old-PPU DoLine: run the CPU in per-scanline
    dot chunks, render/sprite-0-check lazily (ppu.c fceux_* hooks). See
-   docs/interp-fceux-design.md and AGENTS.md AxROM section.
+   docs/interp-fceux-design.md and docs/investigations/battletoads.md.
    ========================================================================= */
 int g_fceux_dot = 0;   /* dots into the current frame, the lazy beam position */
 /* Dot at which visible line 0 starts. The frame runs post-render-first, so the
@@ -877,7 +877,7 @@ static void runner_run_fceux(void) {
          * frames that straddled a churn/spin instruction, so the NMI was serviced
          * one instruction late and timing-latched counters diverged — Contraf's
          * $0029 churn and Battletoads' $0019 spin. Rotating to match the vendor
-         * makes the phase identical by construction. See AGENTS.md.
+         * makes the phase identical by construction. See docs/investigations/fceux-backend.md.
          *
          * Dot map inside one iteration (SL = 341):
          *     [0, 341)        post-render line 240
@@ -1316,7 +1316,7 @@ void runner_run(void) {
                     g_running = 0;
             }
 
-            /* Sync dump (lag-sequence metric — see AGENTS.md "Synchronization
+            /* Sync dump (lag-sequence metric — see docs/sync-methodology.md "Synchronization
              * Methodology"). Capture lag bit AND RAM hash at the SAME boundary
              * (this VBL start) so a single constant offset can align our log to
              * FCEUX's registerafter log. Our boundary is before this frame's NMI
