@@ -176,7 +176,8 @@ frame. Ranked causes:
    lag sequence on a known demo).
 2. **CPU cycle accuracy.** Unaccounted page-cross and taken-branch
    cycles (bugs 1.4/1.5 in `nesrecomp-bugs.md`) accumulate per-frame
-   budget error. Cheapest to fix — do FIRST.
+   budget error. *(2026-09-27: both are implemented in the emitter and in
+   `cpu_interp.c`; remaining cycle suspects are dummy reads — see `STATUS.md`.)*
 3. **DMC cycle stealing** if DPCM active (see `next-features.md` §6.2).
 
 ## Format strategy (FM2 vs MSM) — discovery vs verification
@@ -214,4 +215,5 @@ games with non-standard polling.
 
 `ppu-and-fm2-playback.md` §6.0 (switch metric to lags+RAM) → `fceux-lua-dump.md`
 (dump lag log) → find first lag divergence → almost certainly NMI moment or cycle
-counts → [`nesrecomp-bugs.md`](nesrecomp-bugs.md) bugs 1.4/1.5.
+counts. *(Historical: bugs 1.4/1.5 in [`nesrecomp-bugs.md`](nesrecomp-bugs.md) were the
+original cycle suspects; both are now fixed.)*

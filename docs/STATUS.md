@@ -46,15 +46,15 @@ frame ~12604) and **Battletoads**. Not yet re-measured with the lag/RAM metric.
 Ordered roughly by priority.
 
 1. **Re-measure the recompiler with the lag/RAM metric** (Battlecity, Battletoads) — the framebuffer numbers are stale.
-2. **Exact cycle counts in the recompiler** — bugs 1.4/1.5 (page-cross, taken-branch) in [`nesrecomp-bugs.md`](nesrecomp-bugs.md). Prerequisite for block-boundary yield.
+2. **FPS benchmark** (checklist 2.1 in [`nesrecomp-bugs.md`](nesrecomp-bugs.md)) — NROM vs MMC3 without vsync + `perf`: is time spent in `cpu_interp_step` or `func_*`? Decides whether bank-aware recompilation for MMC3 is worth it.
 3. **RAM-hash residuals on `--interp=fceux`:** Adventure @64950 (categorize), Contraf @8013 (RNG churn). Lead: our `$2000`-write NMI is immediate, FCEUX `TriggerNMI2()` delays one instruction.
 4. **cpu_interp dummy reads possibly still missing:** RMW abs,X/Y unfixed-address dummy read; page-cross dummy read on indexed loads ([`investigations/fceux-backend.md`](investigations/fceux-backend.md)).
 5. **Beam backend desyncs** (Battletoads, Contraf) — deep sub-cycle timing; `--interp=fceux` is the sync path, beam is the hardware-accuracy path.
 6. **Vendor oracle IRQ wiring is approximate** (level IRQ / rising edge) — don't trust `--interp=fceux_vendor` on IRQ-heavy games yet.
-7. **Bank-aware recompilation** — [`bank-aware-recompilation.md`](bank-aware-recompilation.md).
-8. **Block-boundary yield** (performance) — design in external `next-features.md`; blocked on item 2.
+7. **Bank-aware recompilation for MMC1 / MMC3 / MMC5** — UNROM and AxROM are done; see [`bank-aware-recompilation.md`](bank-aware-recompilation.md).
+8. **Block-boundary yield** (performance) — design in external `next-features.md`; its prerequisite (exact page-cross / branch cycles, bugs 1.4/1.5) is already done.
 9. **Generated `_full.c` scalability** — huge TUs (Mermaid ≈ 24500 functions) OOM at `-O2`; options: `-O1` or split TUs.
-10. **cfg auto-detection** of `inline_data_func` / `jump_table` from the ASM parser (needs bug 3.2 first).
+10. **Discovery heuristics / usability** (open items of the `nesrecomp-bugs.md` checklist): auto-detect `inline_data_func` (PLA/PLA) and `jump_table`; orphan-candidate prologue validation (2.5); `--verbose` / `--dry-run` for `nesrecomp.py`; document ASM-parser limits (3.2) and no `$FFFF` wrap-around (3.5).
 11. **MMC5 PRG mode 3** untested — need a ROM (Just Breed, Getsu Fuuma Den, Uncharted Waters).
 12. Optional: Mesen-style dropping of `$2000/$2001/$2005/$2006` writes during warm-up; `controller_profile` switch (FCEUX vs hardware).
 
@@ -64,6 +64,7 @@ both predate the unified FM2 timing and the fceux backend, where Mermaid is now 
 
 ## Recently done
 
+- 2026-09-27 — Docs audited against code: fixed stale claims (bugs 1.4/1.5 done, bank-aware UNROM/AxROM done, `--interp=fceux` implemented, PPU dot offsets, interpreter-fallback strategy, file paths, CLI/keys).
 - 2026-09-27 — Added `debug-desync` skill (`.claude/skills/`).
 - 2026-09-27 — Docs restructured: `AGENTS.md` slimmed; status → `docs/STATUS.md`; logs → `docs/investigations/`; ADRs → `docs/decisions/`.
 - `runner`: `--help` / `--verbose`; vendor `.o` linkage fix in non-INTERP build.

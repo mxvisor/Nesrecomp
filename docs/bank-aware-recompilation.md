@@ -1,8 +1,22 @@
 # Bank-aware recompilation (switchable PRG banks)
 
-> Status: **planned** (not implemented). Moved from `AGENTS.md` TODO section.
+> Status: **partially implemented** — UNROM (2) and AxROM (7) are done; MMC1, MMC3
+> and MMC5 still run switchable-bank code in the interpreter. Moved from the
+> `AGENTS.md` TODO section; the original plan is kept below.
+>
+> What exists in `tools/nesrecomp.py` (checked 2026-09-27):
+> - `discover_banked()` / `_bfs_bank()` disassemble each switchable bank for mapper 2 and 7
+>   and emit `func_bN_XXXX` (step 1 below).
+> - `_emit_dispatch_c()` emits the nested per-bank dispatch using
+>   `mapper_get_prg_bank(0)`; unknown bank → `runner_miss()` + `cpu_interp_step()` (step 2).
+> - `mapper_get_prg_bank(slot)` in `src/include/mapper.h` instead of a public field (step 3).
+> - cfg `extra_func = N:XXXX` (bank-qualified seed) is parsed (step 4).
+>
+> Remaining: MMC1 (two slots, mode-dependent), MMC3 (multiple 8 KB windows),
+> MMC5 (four 8 KB slots) — dispatch must key on more than `prg_bank(0)`.
+> Also note the build-scale problem: Mermaid ≈ 24500 functions (see `STATUS.md`).
 
-Currently, only the **fixed PRG bank** ($E000–$FFFF or equivalent) is statically recompiled. All switchable bank code falls back to the interpreter. This defeats the purpose of recompilation for most banked games.
+Originally (before implementation), only the **fixed PRG bank** ($E000–$FFFF or equivalent) is statically recompiled. All switchable bank code falls back to the interpreter. This defeats the purpose of recompilation for most banked games.
 
 **Goal:** fully recompile all PRG banks, including switchable ones.
 

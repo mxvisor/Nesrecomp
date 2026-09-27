@@ -46,9 +46,11 @@ The main loop in `runner.c` is **yield-based**, not a tight interpreter loop:
 4. Step APU: `apu_step()` called 1× per accumulated CPU cycle
 5. On scanline 241 (VBlank): render frame, flush audio
 
-Every recompiled function ends with `return` after each control-flow instruction (JMP, JSR, branch taken, RTS, RTI), yielding back to the main loop. This keeps PPU/APU in sync at instruction granularity.
+Every recompiled function ends with `return` after each control-flow instruction (JMP, JSR, branch taken, RTS, RTI), yielding back to the main loop. Before a timing-sensitive access (reads/writes of `$2000-$3FFF`, `$4000-$401F`, writes to `$8000+` — see `is_sensitive_access()`) the emitter inserts `tick_ppu_apu()` so PPU/APU catch up to the access.
 
-> **Planned change:** instruction-granularity yield negates most of the recompilation speedup (the yield cost replaces the interpreter's dispatch cost). The target architecture is **block-boundary yield** with catch-up, breaking blocks only at control flow and timing-sensitive accesses. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Do NOT start it before bugs 1.4/1.5 (exact cycle counts) are fixed — block cycle sums depend on them. Full design + checklist: `next-features.md`.
+`--interp` / `--interp=fceux` replace step 2 with `cpu_interp_step()`; the fceux backend uses its own chunked loop (`runner_run_fceux`, `cpu_interp_run_cycles`).
+
+> **Planned change:** instruction-granularity yield negates most of the recompilation speedup (the yield cost replaces the interpreter's dispatch cost). The target architecture is **block-boundary yield** with catch-up, breaking blocks only at control flow and timing-sensitive accesses. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Its prerequisite — exact per-instruction cycle counts (bugs 1.4/1.5: page-cross and taken-branch penalties) — is already implemented in the emitter and in `cpu_interp.c`. Full design + checklist: `next-features.md` (external).
 
 ---
 
@@ -58,16 +60,18 @@ Every recompiled function ends with `return` after each control-flow instruction
 |------|---------|
 | `tools/nesrecomp.py` | Static recompiler — BFS discovery + C code emitter |
 | `tools/asm_parser.py` | ca65 label parser — extracts labeled addresses ≥ $8000 as extra BFS seeds |
-| `runner.c / runner.h` | Main loop, SDL2 window, input, save states, FM2 TAS, interrupts |
-| `memory.c` | CPU address map ($0000–$FFFF): RAM, PPU regs, APU I/O, ROM |
-| `cpu_interp.c` | Full 6502 interpreter fallback (step and run modes) |
-| `ppu.c / ppu.h` | 2C02 PPU emulation: background, sprites, scanline timing, VBlank |
-| `apu.c / apu.h` | APU: pulse ×2, triangle, noise, DMC, audio buffering |
-| `mapper.c / mapper.h` | Bank switching: NROM(0), MMC1(1), UNROM(2), CNROM(3), MMC3(4), AxROM(7) |
-| `include/interrupts.h` | NMI/IRQ pending flags and vector logic |
-| `cfg/NesGame.cfg` | Manually/learning-discovered extra entry points |
+| `src/runner.c`, `src/include/runner.h` | Main loop (beam + `runner_run_fceux`), SDL2 window, input, save states, CLI, interrupts, learning mode, sync dumps |
+| `src/fm2_player.c` | FM2 movie parser/playback (`fm2_open()`) |
+| `src/memory.c` | CPU address map ($0000–$FFFF): RAM, PPU regs, APU I/O, ROM; controller + lag flag |
+| `src/cpu_interp.c` | Full 6502 interpreter incl. illegal opcodes: `cpu_interp_step`, `cpu_interp_run`, `cpu_interp_run_cycles` |
+| `src/ppu.c` | 2C02 PPU: beam-accurate per-dot path + FCEUX-style lazy renderer (`fceux_*`) |
+| `src/apu.c`, `src/apu_fceux.c` | APU: pulse ×2, triangle, noise, DMC (+ DMC DMA stall); FCEUX-timing variant |
+| `src/mapper.c` | Bank switching: NROM(0), MMC1(1), UNROM(2), CNROM(3), MMC3(4), MMC5(5), AxROM(7) |
+| `src/stub_full.c` | `INTERP=1` stand-in for the generated code (`call_by_address → cpu_interp_run`) |
+| `src/include/interrupts.h` | NMI/IRQ pending flags and vector logic |
+| `cfg/NesGame.cfg` | Extra entry points and discovery hints (manual, `asm_parser.py`, learning mode) — not in git |
 | `rom/NesGame.nes` | NES ROM files (not in git — local copies) |
-| `asm/NesGame.s` | Optional ca65 assembly for label-based discovery (not in git) |
+| `asm/NesGame.asm` | Optional ca65 assembly for label-based discovery (not in git; auto-detected by `make`) |
 | `fm2/NesGame.fm2` | Optional FCEUX TAS file for playback-based discovery (not in git) |
 | `tools/extract_rom_data.py` | ROM parser → embedded data header/source |
 | `generated/` | Auto-generated files — do not edit manually |
@@ -94,7 +98,7 @@ handler_table:
     .word handler_a, handler_b, handler_c
 ```
 
-MMC3 switchable banks ($8000–$BFFF) are skipped during discovery — handled by `cpu_interp_run()`.
+Switchable PRG regions (`is_switchable()`) are excluded from the fixed-bank BFS: MMC1/UNROM/MMC3 `$8000–$BFFF`, MMC5 `$8000–$DFFF`, AxROM the whole `$8000–$FFFF`. For **UNROM (2) and AxROM (7)** each bank is then disassembled separately (`discover_banked`, `_bfs_bank`) into `func_bN_XXXX`, dispatched by `mapper_get_prg_bank(0)`. For MMC1/MMC3/MMC5 switchable code always runs in the interpreter (dispatch miss → `cpu_interp_step()`). Plan for the rest: `docs/bank-aware-recompilation.md`.
 
 ### Orphan Phase
 
@@ -122,7 +126,7 @@ python tools/nesrecomp.py rom/NesGame.nes --game NesGame --orphan-window 16
 
 | Directive | Purpose |
 |-----------|---------|
-| `extra_func = XXXX` | Force-add entry point — for state machine handlers, learning mode output |
+| `extra_func = XXXX` | Force-add entry point — for state machine handlers, learning mode output. Bank-qualified form `extra_func = N:XXXX` seeds bank N (UNROM/AxROM) |
 | `data_region = XXXX,YYYY` | Exclude address range from BFS — prevents phantom functions from inline data |
 | `inline_data_func = XXXX` | Mark subroutine that consumes bytes after JSR as data (PLA/PLA pattern) — BFS skips `pc+3` fallthrough |
 | `jump_table = XXXX,N` | Declare jump table of N entries at XXXX — BFS adds each valid word as a seed |
@@ -168,16 +172,11 @@ void call_by_address(uint16_t addr) {
 
 ## Interpreter Fallback
 
-Two strategies, selected per mapper:
-
-| Strategy | Function | When Used |
-|----------|----------|-----------|
-| Single-step | `cpu_interp_step()` | Most mappers (0,1,2,3,7) — rare misses |
-| Full-run | `cpu_interp_run(addr)` | MMC3 only — entire subroutines in switchable banks |
-
-`cpu_interp_step()` executes one instruction and returns to main loop for PPU/APU sync.
-
-`cpu_interp_run(addr)` runs until RTS/RTI returns to original stack depth.
+| Function | Used by |
+|----------|---------|
+| `cpu_interp_step()` | Every dispatch miss in recompiled mode (all mappers, incl. switchable-bank code of MMC1/MMC3/MMC5 and unknown banks) and the whole `--interp` beam loop. Executes one instruction and returns to the main loop for PPU/APU sync. |
+| `cpu_interp_run(addr)` | Only `src/stub_full.c` (`INTERP=1` builds). Runs until RTS/RTI returns to the original stack depth. |
+| `cpu_interp_run_cycles(n)` | `--interp=fceux` chunked loop (FCEUX `X6502_Run` analogue). |
 
 ---
 
@@ -265,13 +264,22 @@ make ROM=rom/NesGame.nes GAME=NesGame ASM=NesGame.asm
 
 # Individual pipeline steps:
 make gen_embed  GAME=NesGame ROM=rom/NesGame.nes   # extract PRG/CHR to C header
-make parse_asm  GAME=NesGame ASM=NesGame.asm       # ca65 labels → generated/NesGame_asm_labels.cfg
+make parse_asm  GAME=NesGame ASM=NesGame.asm       # ca65 labels → merged into cfg/NesGame.cfg
 make discover   GAME=NesGame ROM=rom/NesGame.nes   # BFS + C emit
 make compile    GAME=NesGame                       # C → binary (no re-disassembly)
+
+# Interpreter-only build (no discover, links src/stub_full.c) — use for all demo-sync work
+make GAME=NesGame INTERP=1
+
+# Build every rom/*.nes; list targets/options
+make roms
+make help
 
 # Cross-compile for Windows
 make CROSS=1 GAME=NesGame
 ```
+
+`ROM` defaults to `rom/$(GAME).nes`; `ASM` is auto-detected as `asm/$(GAME).asm`. Other options: `ORPHAN=N`, `DEFAULT_SCALE=N`.
 
 Output: `bin/NesGame` (Linux) or `bin/NesGame.exe` (Windows).
 
@@ -286,34 +294,32 @@ ROM
 
 ---
 
-## PPU Timing (Current Branch: fix/ppu-pixel-timing)
+## PPU Timing (beam path, `ppu.c`)
 
-The real 2C02 PPU renders the first visible pixel at **dot 12**, not dot 1.
-
-Current fix:
-- Shift registers shift at dots 1–256 (pipeline fill)
-- Pixel output at dots 12–267 → `x = dot - 12`
-- BG tile fetch reordered before pixel block on reload-dots to avoid 1-pixel gaps
-
-If touching `ppu.c`, be aware of this dot offset. The scanline has 341 dots; visible pixels are dots 12–267 → screen columns 0–255.
+- 341 dots/scanline, 262 scanlines/frame; VBlank at scanline 241; odd-frame dot skip on the pre-render line when rendering.
+- Pixel output at dots 1–256 → `x = dot - 1`.
+- BG tile fetch happens **before** the pixel block on reload dots (9, 17, … 257) to avoid 1-pixel gaps at tile boundaries.
+- The `--interp=fceux` backend does not use this per-dot path: it renders lazily per line (`fceux_*` in `ppu.c`), driven by `LineUpdate`-style triggers on `$200x` accesses — see `docs/investigations/battletoads.md`.
 
 ---
 
 ## State Variables
 
 ```c
-// cpu.h
-cpu_t cpu;           // A, X, Y, S, P, PC registers + flags
+// src/include/cpu.h
+CPU cpu;                      // A, X, Y, SP, PC + flags N V D I Z C (get_P/set_P)
+uint32_t g_cpu_cycles;        // cycles of the current step; reset after PPU/APU step in main loop
+uint64_t g_total_cpu_cycles;  // running total (excludes DMC stall cycles)
 
-// Global cycle counter (runner.c)
-int g_cpu_cycles;    // reset to 0 after PPU/APU step in main loop
+// src/include/interrupts.h
+volatile int g_nmi_pending;
+volatile int g_irq_pending;
 
-// Interrupt flags (interrupts.h)
-int g_nmi_pending;
-int g_irq_pending;
+// src/include/ppu.h
+PPU ppu;                      // .scanline, .cycle (dot), .v_addr, .regs[], .framebuf[], .frame_odd
 
-// PPU state (ppu.h)
-ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
+// src/include/memory.h
+int g_lag_flag;               // 1 = no controller read this frame (lag metric)
 ```
 
 ---
@@ -323,12 +329,12 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 | # | Name | PRG Banks | CHR | Notes |
 |---|------|-----------|-----|-------|
 | 0 | NROM | Fixed 16/32KB | Fixed | Simplest — fully recompilable |
-| 1 | MMC1 | 16KB switchable | 4/8KB switchable | Shift register writes |
-| 2 | UNROM | 16KB switchable + fixed last | Fixed | |
+| 1 | MMC1 | 16KB switchable | 4/8KB switchable | Shift register writes; switchable code → interpreter |
+| 2 | UNROM | 16KB switchable + fixed last | Fixed | Per-bank recompilation (`func_bN_XXXX`) |
 | 3 | CNROM | Fixed | 8KB switchable | CHR only switching |
-| 4 | MMC3 | 8KB granularity | 2/1KB granularity | Scanline IRQ; interpreter for $8000–$BFFF |
+| 4 | MMC3 | 8KB granularity | 2/1KB granularity | Scanline IRQ; switchable code → interpreter |
 | 5 | MMC5 | mode 2: 8KB×4 + fixed last | 1KB×8 sprites / 1KB×4 BG | PRG mode 3 (32KB switchable) not yet tested — TODO: find ROM (Just Breed, Uncharted Waters, Getsu Fuuma Den) |
-| 7 | AxROM | 32KB switchable | — | One-screen nametable |
+| 7 | AxROM | 32KB switchable | — | One-screen nametable; per-bank recompilation (`func_bN_XXXX`) |
 
 ---
 
@@ -339,14 +345,20 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 | F5 | Save state |
 | F8 | Load state |
 | F11 | Toggle fullscreen |
+| F12 | Screenshot (`screenshot_<ticks>.png`) |
+| Arrows / Z / X / Enter / Right Shift | D-pad / A / B / Start / Select |
 | Tab | Toggle widescreen |
 | ESC | Quit |
 
 ## CLI Flags
 
+`bin/GAME --help` prints the authoritative list. The ROM is embedded; a positional `rom.nes` argument is accepted and ignored.
+
 | Flag | Description |
 |------|-------------|
-| `--headless` | Run without SDL window (for automated testing) |
+| `-h`, `--help` / `-v`, `--verbose` | Usage / print active configuration at startup |
+| `--scale N` / `--speed N` | Window scale / fast-forward (N frames per shown frame) |
+| `--headless` | Run without SDL window (for automated testing); enables learning mode automatically |
 | `--interp` / `--interp=beam` | Use pure CPU interpreter (beam-accurate per-dot PPU) instead of recompiled code |
 | `--interp=fceux` | FCEUX-faithful playback backend (lazy line rendering, FCEUX DoLine timing) — the demo-sync reference path |
 | `--interp=fceux_vendor` | GPL FCEUX x6502 differential oracle — only when built with local `nogpl/` sources (`INTERP=1`) |
@@ -364,13 +376,13 @@ ppu_t ppu;           // includes .scanline, .dot, .frame_buffer[]
 ## Common Tasks for AI Agents
 
 ### Adding a new mapper
-Edit `mapper.c` and `mapper.h`. Follow existing mapper pattern: implement `mapper_write()` bank switching and update `mapper_init()`.
+Edit `src/mapper.c` and `src/include/mapper.h`. Follow existing mapper pattern: implement `mapper_write()` bank switching and update `mapper_init()`.
 
 ### Fixing a PPU rendering bug
-Work in `ppu.c`. Key timing: 341 dots/scanline, 262 scanlines/frame. Pixel output at dots 12–267. VBlank starts scanline 241.
+Work in `src/ppu.c`. Key timing: 341 dots/scanline, 262 scanlines/frame. Pixel output at dots 1–256. VBlank starts scanline 241. Decide first which backend is affected (beam per-dot path vs `fceux_*` lazy renderer) — see "PPU Timing" above.
 
 ### Adding a new 6502 opcode to the interpreter
-Edit `cpu_interp.c`. All opcodes follow the same pattern: decode addressing mode, execute, update flags, increment PC, accumulate cycles.
+Edit `src/cpu_interp.c`. All opcodes follow the same pattern: decode addressing mode, execute, update flags, increment PC, accumulate cycles.
 
 ### Adding a new opcode to the recompiler
 Edit `tools/nesrecomp.py` in the instruction emission section. Match the C pattern used in `cpu_interp.c`.
@@ -379,7 +391,7 @@ Edit `tools/nesrecomp.py` in the instruction emission section. Match the C patte
 Enable `RECOMP_LEARN=1`, run headless, check the generated `cfg/NesGame.cfg` for new addresses. Re-run `make GAME=NesGame`.
 
 ### Investigating cycle accuracy
-Every instruction must: (a) increment `g_cpu_cycles` by the correct cycle count, (b) return from the recompiled function (or step from interpreter) so the main loop can step PPU/APU.
+Every instruction must: (a) increment `g_cpu_cycles` by the correct cycle count including page-cross / taken-branch penalties (emitter: `Op.page_cross`, branch emission; interpreter: per-opcode `cycles=`), (b) return from the recompiled function (or step from interpreter) so the main loop can step PPU/APU. `cpu_base_cycles[256]` in `cpu_interp.c` is the canonical base table (verified identical to FCEUX `CycTable`).
 
 ---
 

@@ -19,7 +19,7 @@ Static recompilation of NES games to native C code. No interpreter hot loop — 
 - **FCEUX-faithful verification** — an optional headless interpreter build (`INTERP=1`, `--interp=fceux`) reproduces FCEUX's per-frame timing for automated regression testing against TAS movies (see *Accuracy Verification*)
 - **Universal Makefile** — same Makefile works on Linux and Windows (MinGW), with cross-compile support
 - **Per-game binary** — `GAME=BattleCity` → `bin/BattleCity`
-- **Mapper support** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
+- **Mapper support** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5, AxROM
 - **Save states** — F5 save, F8 load (persisted to `<bin-dir>/sav/GAME.state`)
 - **Battery-backed SRAM** — auto-loaded/saved to `<bin-dir>/sav/GAME_battery.sav` when cartridge has battery flag
 - **Screenshot** — F12 (saves `screenshot_<ticks>.png`); `--screenshot FILE.png` at launch for headless capture
@@ -174,7 +174,7 @@ src/
   ppu.c / include/ppu.h         — PPU 2C02 emulation
   apu.c / include/apu.h         — APU emulation (pulse, triangle, noise, DMC)
   apu_fceux.c                   — FCEUX-faithful APU/DMC timing for --interp=fceux
-  mapper.c / include/mapper.h   — mapper logic (NROM, MMC1, UNROM, CNROM, MMC3, MMC5)
+  mapper.c / include/mapper.h   — mapper logic (NROM, MMC1, UNROM, CNROM, MMC3, MMC5, AxROM)
   memory.c                      — CPU address map, controller I/O
   include/                      — shared headers (cpu, ppu, apu, mapper, interrupts)
 
@@ -188,11 +188,11 @@ generated/            — per-game recompiled C files + embedded ROM data (auto-
 nogpl/                — vendored FCEUX oracle (GPL) — gitignored; enables --interp=fceux_vendor when present
 
 rom/                  — NES ROM files (.nes) — not tracked by git
-cfg/                  — per-game extra entry point config (learning mode output)
+cfg/                  — per-game extra entry point config (learning mode output) — not tracked by git (except game.cfg.example)
 asm/                  — ca65 assembly sources for label-based BFS seeding — not tracked by git
 fm2/                  — FCEUX TAS movie files for automated discovery — not tracked by git
 lags/                 — FCEUX reference lag/sync dumps for verify_all.sh — not tracked by git
-docs/                 — reference documentation — not tracked by git
+docs/                 — project docs: STATUS.md, methodology, investigations/, decisions/ (docs/nesdev/ is local-only)
 ```
 
 ## Supported Mappers

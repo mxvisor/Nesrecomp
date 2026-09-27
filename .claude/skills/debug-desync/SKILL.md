@@ -87,8 +87,10 @@ This instrumentation is ad-hoc: keep it out of commits.
 ## 6. Usual root causes (check first)
 
 1. NMI/IRQ moment (VBL dot, 12-dot NMI delay, `$2000` NMI-enable edge, mapper IRQ clocking).
-2. CPU cycle accuracy (page-cross / taken-branch — bugs 1.4/1.5 in
-   `docs/nesrecomp-bugs.md`; indexed-store / RMW dummy reads hitting `$4016/$4017`).
+2. CPU cycle accuracy — page-cross / taken-branch penalties are implemented
+   (bugs 1.4/1.5), so check dummy reads first: indexed-store dummy read is done,
+   RMW abs,X/Y and page-cross indexed-load dummy reads may still be missing
+   (they matter when they hit `$2002`/`$2007`/`$4016/$4017`).
 3. Reset handling (PowerNES drops the CPU↔PPU carry; soft reset does not).
 4. PPU register side effects (`LineUpdate` triggers on `$200x` reads/writes).
 5. Timing-churned RNG loops (`wait-for-NMI` accumulators) — they amplify any of the above.

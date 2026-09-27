@@ -19,7 +19,7 @@
 - **Точная проверка через FCEUX** — опциональная headless-сборка интерпретатора (`INTERP=1`, `--interp=fceux`) воспроизводит покадровый тайминг FCEUX для автоматического регрессионного тестирования на TAS-записях (см. *Проверка точности*)
 - **Универсальный Makefile** — один Makefile работает на Linux и Windows (MinGW), с поддержкой кросс-компиляции
 - **Бинарник для каждой игры** — `GAME=BattleCity` → `bin/BattleCity`
-- **Поддержка маперов** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5
+- **Поддержка маперов** — NROM, MMC1, UNROM, CNROM, MMC3, MMC5, AxROM
 - **Состояния сохранения** — F5 сохранить, F8 загрузить (файл `<bin-dir>/sav/GAME.state`)
 - **SRAM на батарейке** — автозагрузка/сохранение в `<bin-dir>/sav/GAME_battery.sav` при наличии battery-флага в картридже
 - **Скриншот** — F12 (сохраняет `screenshot_<ticks>.png`); `--screenshot FILE.png` при запуске для PNG-захвата в headless-режиме
@@ -174,7 +174,7 @@ src/
   ppu.c / include/ppu.h         — эмуляция PPU 2C02
   apu.c / include/apu.h         — эмуляция APU (прямоугольные, треугольный, шум, DMC)
   apu_fceux.c                   — тайминг APU/DMC в стиле FCEUX для --interp=fceux
-  mapper.c / include/mapper.h   — логика маперов (NROM, MMC1, UNROM, CNROM, MMC3, MMC5)
+  mapper.c / include/mapper.h   — логика маперов (NROM, MMC1, UNROM, CNROM, MMC3, MMC5, AxROM)
   memory.c                      — карта адресов CPU, ввод-вывод контроллеров
   include/                      — общие заголовки (cpu, ppu, apu, mapper, interrupts)
 
@@ -188,11 +188,11 @@ generated/            — рекомпилированные C-файлы и в�
 nogpl/                — вендорный оракул FCEUX (GPL) — игнорируется git; включает --interp=fceux_vendor при наличии
 
 rom/                  — NES ROM-файлы (.nes) — не отслеживаются git
-cfg/                  — конфиг дополнительных точек входа для каждой игры (вывод режима обучения)
+cfg/                  — конфиг дополнительных точек входа для каждой игры (вывод режима обучения) — не отслеживается git (кроме game.cfg.example)
 asm/                  — исходники ca65 для посева BFS по меткам — не отслеживаются git
 fm2/                  — TAS-файлы FCEUX для автоматизированного обнаружения — не отслеживаются git
 lags/                 — эталонные lag/sync-дампы FCEUX для verify_all.sh — не отслеживаются git
-docs/                 — справочная документация — не отслеживается git
+docs/                 — документация проекта: STATUS.md, методология, investigations/, decisions/ (docs/nesdev/ — только локально)
 ```
 
 ## Поддерживаемые маперы

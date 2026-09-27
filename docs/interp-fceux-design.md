@@ -1,6 +1,8 @@
 # Design: `--interp=fceux` — FCEUX-faithful playback backend
 
-Status: **design** (not implemented). Chosen approach: **A — port FCEUX's
+Status: **implemented** (2026-06/07; lag 11/11 in sync — see `docs/STATUS.md` and
+`docs/investigations/fceux-backend.md`, `battletoads.md`, `contraf.md`). This file
+is the original design, kept for rationale. Chosen approach: **A — port FCEUX's
 old PPU + IRQ timing** (vendored `fceux/src` is the source of truth), rather
 than re-deriving FCEUX's behaviour piecemeal (that repeatedly produced subtle
 mismatches: see the catch-up work and the failed sprite-0 deferral).
