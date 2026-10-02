@@ -135,6 +135,20 @@ class TestBanked(EmitCase):
         self.assertIn("switch (mapper_get_prg_bank(0))", dispatch)
         self.assertIn("default: runner_miss(addr); cpu_interp_step(); return;", dispatch)
 
+    def test_unrom_bank_qualified_cfg_seed_only_in_its_bank(self):
+        # "extra_func = 1:9000" (learn mode writes this form for UNROM)
+        rb = RomBuilder(mapper=2, prg_banks=4)
+        rb.put(0xC000, [JSR, *w(0x8000), RTS]).vectors(0xC000)
+        for bank in range(3):
+            rb.put_bank(bank, 0x8000, [RTS])
+        rb.put_bank(1, 0x9000, [LDA_IMM, 0x11, RTS])
+        dis = rb.disassembler()
+        dis.banked_extra_funcs[1].append(0x9000)
+        quiet(dis.discover, [dis.read_vector(v) for v in (0xFFFC, 0xFFFA, 0xFFFE)])
+        self.assertIn(0x9000, dis.banked_functions[1])
+        self.assertNotIn(0x9000, dis.banked_functions[0])
+        self.assertNotIn(0x9000, dis.banked_functions[2])
+
     def test_axrom_each_bank_seeded_from_its_own_vectors(self):
         rb = RomBuilder(mapper=7, prg_banks=4)       # 2 x 32 KB banks
         rb.put_bank(0, 0x8000, [RTS]).vectors(0x8000, bank=0)

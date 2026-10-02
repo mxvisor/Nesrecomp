@@ -53,6 +53,13 @@ static inline uint16_t rd16_bug(uint16_t a) {
     return RD(a) | ((uint16_t)RD(hi) << 8);
 }
 
+/* Control-flow observer for learn mode (RECOMP_LEARN), NULL = off.
+ * Called with the new PC after every instruction that transfers control the way
+ * a recompiled block exit does: JMP, JSR, RTS, BRK and taken branches. Not after
+ * RTI: it returns to wherever the interrupt hit, which under the interpreter is
+ * any instruction boundary, not a block entry. */
+void (*cpu_interp_flow_hook)(uint16_t target) = NULL;
+
 /* =========================================================================
    Execute one instruction at cpu.PC, advance cpu.PC
    Returns cycle count for that instruction (approximate)
@@ -468,6 +475,18 @@ int cpu_interp_step(void) {
         /* Unknown opcode — skip 1 byte */
         cpu.PC++;
         break;
+    }
+
+    if (cpu_interp_flow_hook) {
+        switch (op) {
+        case 0x4C: case 0x6C: case 0x20: case 0x60: case 0x00:
+            cpu_interp_flow_hook(cpu.PC); break;
+        case 0x10: case 0x30: case 0x50: case 0x70:
+        case 0x90: case 0xB0: case 0xD0: case 0xF0:
+            if (cpu.PC != (uint16_t)(pc + 2)) cpu_interp_flow_hook(cpu.PC);
+            break;
+        default: break;
+        }
     }
 
     (void)t16; /* suppress unused warning */

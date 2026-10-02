@@ -6,7 +6,7 @@
 >
 > Last updated: 2026-10-02 (lag table = full `tools/verify_all.sh` run after the
 > `cpu_interp.c` fixes; the RAM first-mismatch column is from 2026-07-22/23 and was
-> not re-measured).
+> not re-measured; learn-mode changes not yet run on real demos).
 
 ## Demo sync — lag metric (primary)
 
@@ -40,24 +40,32 @@ older beam numbers in [`investigations/lag-results-2026-06.md`](investigations/l
 
 ## Recompiler (dispatch mode)
 
-The recompiled (dispatch) mode is **not** a sync target: the sync/discovery path is
-`--interp=fceux`, which is now correct (11/11 lag-exact) and is what collects addresses
-(learn mode) for the recompiler; beam's oracle is hardware, not FCEUX.
+Not a sync target — roles are fixed in ADR [0005](decisions/0005-backend-roles.md):
+recompiler = speed, beam = hardware-accurate fallback, `--interp=fceux` = FCEUX-synced
+address collection. Per-opcode correctness is covered by `tests/test_cpu_diff.py`.
 
-Known property (measured 2026-10-02, Battlecity, 46898 frames, dispatch vs `--interp`):
-a recompiled block runs to its end before the main loop checks NMI/IRQ, so interrupts
-are taken at block boundaries instead of instruction boundaries — the lag flag differs on
-234 frames (first @13348; lag count 206 vs 128) and the pushed return PC differs in the
-stack page. An experiment that checked interrupts between instructions inside blocks
-(`IRQ_CHECK`, opt-in, slow) removed the lag mismatches; it was **dropped as not needed**.
+Known, accepted property (measured 2026-10-02, Battlecity, 46898 frames, dispatch vs
+`--interp`): interrupts are taken at block boundaries, so the lag flag differs on 234
+frames (first @13348; lag count 206 vs 128) and the pushed return PC differs in the stack
+page. A per-instruction interrupt check inside blocks (`IRQ_CHECK` / `BLOCK_IRQ_CATCHUP`,
+opt-in, slow) removed the mismatches and was dropped as not needed.
 Older framebuffer-hash numbers: [`investigations/framebuffer-era.md`](investigations/framebuffer-era.md).
+
+## Address collection (learn mode, 2026-10-02)
+
+`--interp=fceux` now collects addresses: the interpreter reports every
+JMP/JSR/RTS/BRK/taken-branch target (`cpu_interp_flow_hook`), appended to `cfg/GAME.cfg`
+(UNROM/AxROM bank-qualified `N:XXXX`). Before, only dispatch misses were logged, i.e.
+collection ran only on the non-synced path. Also fixed: learn mode used to **rewrite**
+the cfg on exit with only plain `extra_func` lines (dropping `data_region`, `jump_table`,
+`N:XXXX`, comments); `nesrecomp.py` ignored `N:XXXX` seeds for UNROM (only AxROM used them).
+Verified on synthetic ROMs only (`tools/ci_smoke.sh`). Guide: [`address-collection.md`](address-collection.md).
 
 ## Fixed after the differential test (2026-10-02)
 
 `cpu_interp.c` (shared by all backends) and the emitter now agree on every opcode;
-`KNOWN` in `tests/test_cpu_diff.py` is empty. `make test` passes (36). **Still needs a
-local `tools/verify_all.sh`** — `cpu_interp.c` is shared, and the changes below alter
-observable behavior:
+`KNOWN` in `tests/test_cpu_diff.py` is empty. `make test` passes; `tools/verify_all.sh`
+after the fixes is the lag table above (no verdict changed):
 
 - Zero-page pointer wrap: `rd16()` → `rd16_zp()` (`$FF` pointer high byte from `$00`).
 - Page-cross +1 cycle, following FCEUX (`LD_ABY`/`LD_IY`/`LD_ABX`): LAX abs,Y `$BF`,
@@ -75,8 +83,7 @@ observable behavior:
   (`INC $10; JMP loop` + NMI handler) the `--dump-sync` RAM hash differs on 399/600
   frames between dispatch mode and `--interp`: a recompiled function runs a whole
   block before the main loop checks NMI, the interpreter checks after every
-  instruction. Likely relevant to "recomp ≪ interp" on Battlecity/Battletoads.
-  Next: measure how far the counter drifts; decide on interrupt catch-up inside blocks.
+  instruction. **Accepted** — see ADR 0005 and "Recompiler (dispatch mode)" above.
 - **Orphan phase is quadratic on 1-byte-terminator padding.** Every `$00` (BRK) —
   or `$02`-class STP — padding byte becomes its own "function", one per pass:
   1 KB of `$00` → 0.25 s / 1034 functions, 4 KB → 3.9 s / 4106 functions. Real ROMs
@@ -88,7 +95,7 @@ observable behavior:
 
 Ordered roughly by priority.
 
-1. *(removed 2026-10-02: recompiler interrupt timing is not a goal — see "Recompiler (dispatch mode)".)*
+1. **Collect addresses on the real demos** (local): `make GAME=X INTERP=1`, then `--headless --interp=fceux --playback fm2/X.fm2`, then `make GAME=X`; check that a dispatch run afterwards logs ~nothing. Rebuild **Mermaid** first (`nesrecomp.py` UNROM seeding changed). `cfg/X.cfg` will gain many lines that BFS already knew (every taken branch / JSR target is a function entry anyway) — harmless; only genuinely new code adds functions. Watch Mermaid's `_full.c` size (item 9).
 2. **FPS benchmark** (checklist 2.1 in [`nesrecomp-bugs.md`](nesrecomp-bugs.md)) — NROM vs MMC3 without vsync + `perf`: is time spent in `cpu_interp_step` or `func_*`? Decides whether bank-aware recompilation for MMC3 is worth it.
 3. **RAM-hash residuals on `--interp=fceux`:** Adventure @64950 (categorize), Contraf @8013 (RNG churn). Lead: our `$2000`-write NMI is immediate, FCEUX `TriggerNMI2()` delays one instruction.
 4. **cpu_interp dummy reads possibly still missing:** RMW abs,X/Y unfixed-address dummy read; page-cross dummy read on indexed loads ([`investigations/fceux-backend.md`](investigations/fceux-backend.md)).
@@ -107,6 +114,7 @@ both predate the unified FM2 timing and the fceux backend, where Mermaid is now 
 
 ## Recently done
 
+- 2026-10-02 — Learn mode collects under `--interp=fceux` (interpreter control-flow hook), append-only cfg, bank-qualified UNROM/AxROM seeds; ADR 0005 (backend roles); smoke test covers learn → rebuild.
 - 2026-10-02 — Fixed the `cpu_interp.c` / emitter bugs found by the differential test (see above); the interrupt-granularity experiment (`BLOCK_IRQ_CATCHUP`) was tried and removed.
 - 2026-09-27 — CI: GitHub Actions runs `make test` + `tools/ci_smoke.sh` (synthetic ROM, full pipeline, all backends, GPL-free check).
 - 2026-09-27 — Test suite for the recompiler (`make test`, 36 tests, synthetic ROMs) incl. differential test emitter vs interpreter; found the `cpu_interp.c` bugs listed above.

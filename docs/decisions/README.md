@@ -32,3 +32,4 @@ What this makes easier / harder; what to watch for.
 | [0002](0002-gpl-fceux-oracle-out-of-tree.md) | GPL FCEUX sources live only in gitignored `nogpl/` |
 | [0003](0003-separate-fceux-backend.md) | FCEUX-faithful playback is a separate `--interp=fceux` backend; beam stays default |
 | [0004](0004-fm2-discovery-mesen-verification.md) | FM2 for address discovery, Mesen for correctness verification |
+| [0005](0005-backend-roles.md) | Roles: recompiler = speed (not timing-equivalent), beam = hardware-accurate fallback, `--interp=fceux` = FCEUX-synced address collection |

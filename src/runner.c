@@ -391,27 +391,72 @@ void tick_ppu_apu(void) {
 }
 
 /* =========================================================================
-   Learning mode — automatic collection of dispatch misses
+   Learning mode — collect code addresses into cfg/GAME.cfg (extra_func seeds)
+
+   Two sources, both on when RECOMP_LEARN is set (auto in --headless):
+   - dispatch misses: call_by_address() found no recompiled function;
+   - interpreter control flow: every JMP/JSR/RTS/BRK/taken-branch target
+     executed by cpu_interp_step() (cpu_interp_flow_hook). This is what makes
+     --interp=fceux — the FCEUX-synced demo player — collect addresses: it never
+     goes through call_by_address(). It also covers --interp and the dispatch
+     fallback. (The GPL vendor CPU of --interp=fceux_vendor is not hooked.)
+
+   New addresses are APPENDED to the cfg as soon as they are seen (crash-safe);
+   the file is never rewritten, so data_region / jump_table / comments survive.
+   Addresses in a per-bank recompiled region (UNROM $8000-$BFFF, AxROM) are
+   written bank-qualified, "extra_func = N:XXXX". Addresses in a switchable
+   region of MMC1/MMC3/MMC5 are skipped: nesrecomp.py drops such seeds (that
+   code always runs in the interpreter). Mirrors Disassembler.is_switchable().
    ========================================================================= */
-static void runner_miss_write_all(void);
+static uint8_t *learn_fixed = NULL;        /* 64 Kbit: unbanked addresses */
+static uint8_t *learn_bank[256];           /* 64 Kbit per PRG bank, lazily allocated */
+static char    *learn_path = NULL;
+static FILE    *learn_out  = NULL;
+static int      learn_new  = 0;
 
-static uint8_t *miss_map = NULL;   /* bitmap 8192 bytes = 65536 bits */
-static char    *miss_path = NULL;
-
-void runner_miss(uint16_t addr) {
-    if (!miss_map) return;  /* learning disabled */
-    if (addr < 0x8000) return;  /* only PRG ROM addresses are valid code */
-    uint16_t idx = addr >> 3;
-    uint8_t  bit = 1 << (addr & 7);
-    if (miss_map[idx] & bit) return;   /* already seen */
-    miss_map[idx] |= bit;
-    /* log immediately (safe if killed mid-game) */
-    FILE *f = fopen(miss_path, "a");
-    if (f) {
-        fprintf(f, "%04X\n", addr);
-        fclose(f);
-    }
+static int learn_is_banked(uint16_t addr) {      /* per-bank recompiled region */
+    return (mapper.id == 2 && addr < 0xC000) || mapper.id == 7;
 }
+static int learn_is_interp_only(uint16_t addr) { /* switchable, not recompiled */
+    return ((mapper.id == 1 || mapper.id == 4) && addr < 0xC000) ||
+           (mapper.id == 5 && addr < 0xE000);
+}
+
+/* Mark (bank, addr) as known; bank < 0 = unbanked. Returns 1 if it was new. */
+static int learn_mark(int bank, uint16_t addr) {
+    uint8_t *map = learn_fixed;
+    if (bank >= 0) {
+        if (bank > 255) return 0;
+        if (!learn_bank[bank] && !(learn_bank[bank] = calloc(65536 / 8, 1))) return 0;
+        map = learn_bank[bank];
+    }
+    uint8_t bit = (uint8_t)(1 << (addr & 7));
+    if (map[addr >> 3] & bit) return 0;
+    map[addr >> 3] |= bit;
+    return 1;
+}
+
+static void learn_record(uint16_t addr) {
+    if (!learn_fixed || addr < 0x8000) return;   /* off, or RAM code */
+    if (learn_is_interp_only(addr)) return;
+    int bank = learn_is_banked(addr) ? mapper_get_prg_bank(0) : -1;
+    if (!learn_mark(bank, addr)) return;
+    if (!learn_out) {
+        learn_out = fopen(learn_path, "a+");
+        if (!learn_out) return;
+        /* don't glue our first line onto a last line without a newline */
+        if (fseek(learn_out, -1, SEEK_END) == 0 && fgetc(learn_out) != '\n')
+            fputc('\n', learn_out);
+        fseek(learn_out, 0, SEEK_END);
+        fprintf(learn_out, "# learn mode (RECOMP_LEARN)\n");
+    }
+    if (bank < 0) fprintf(learn_out, "extra_func = %04X\n", addr);
+    else          fprintf(learn_out, "extra_func = %d:%04X\n", bank, addr);
+    fflush(learn_out);
+    learn_new++;
+}
+
+void runner_miss(uint16_t addr) { learn_record(addr); }
 
 /* =========================================================================
    Battery-backed SRAM persistence  (cfg/GAME.sav)
@@ -444,57 +489,48 @@ static void sram_save(void) {
 static void runner_miss_init(void) {
     const char *mode = getenv("RECOMP_LEARN");
     if (!mode || *mode == '0') return;
-    miss_map = calloc(65536 / 8, 1);
-    if (!miss_map) return;
-    const char *game = GAME_NAME;
-    char path[512];
+    learn_fixed = calloc(65536 / 8, 1);
+    if (!learn_fixed) return;
 #ifdef _WIN32
     mkdir("cfg");
 #else
     mkdir("cfg", 0755);
 #endif
-    snprintf(path, sizeof(path), "cfg/%s.cfg", game);
-    miss_path = strdup(path);
-    if (!miss_path) { free(miss_map); miss_map = NULL; return; }
-    /* load existing misses to avoid duplicates */
-    FILE *f = fopen(miss_path, "r");
+    char path[512];
+    snprintf(path, sizeof(path), "cfg/%s.cfg", GAME_NAME);
+    learn_path = strdup(path);
+    if (!learn_path) { free(learn_fixed); learn_fixed = NULL; return; }
+    /* Pre-load existing extra_func entries (both forms) so they are not re-added. */
+    int known = 0;
+    FILE *f = fopen(learn_path, "r");
     if (f) {
-        char line[64];
+        char line[128];
         while (fgets(line, sizeof(line), f)) {
-            unsigned a = 0;
-            if (sscanf(line, "extra_func = %x", &a) == 1 ||
-                sscanf(line, "%x", &a) == 1) {
-                if (a >= 0x8000 && a < 65536) {
-                    uint16_t idx = a >> 3;
-                    uint8_t  bit = 1 << (a & 7);
-                    miss_map[idx] |= bit;
-                }
+            int bank; unsigned a;
+            if (sscanf(line, " extra_func = %d:%x", &bank, &a) == 2) {
+                if (bank >= 0 && a >= 0x8000 && a <= 0xFFFF) known += learn_mark(bank, (uint16_t)a);
+            } else if (sscanf(line, " extra_func = %x", &a) == 1) {
+                if (a >= 0x8000 && a <= 0xFFFF) known += learn_mark(-1, (uint16_t)a);
             }
         }
         fclose(f);
     }
-    fprintf(stderr, "[learn] logging miss addresses to %s\n", miss_path);
+    cpu_interp_flow_hook = learn_record;
+    fprintf(stderr, "[learn] appending new code addresses to %s (%d already known)\n",
+            learn_path, known);
 }
 
-static void runner_miss_write_all(void) {
-    if (!miss_map || !miss_path) return;
-    /* build sorted list */
-    uint16_t addrs[65536];
-    int n = 0;
-    for (uint32_t a = 0x8000; a < 65536; a++) {
-        uint16_t idx = a >> 3;
-        uint8_t  bit = 1 << (a & 7);
-        if (miss_map[idx] & bit)
-            addrs[n++] = (uint16_t)a;
-    }
-    if (n == 0) return;
-    FILE *f = fopen(miss_path, "w");
-    if (!f) return;
-    fprintf(f, "# Auto-generated miss addresses (%d total)\n", n);
-    for (int i = 0; i < n; i++)
-        fprintf(f, "extra_func = %04X\n", addrs[i]);
-    fclose(f);
-    fprintf(stderr, "[learn] wrote %d addresses to %s\n", n, miss_path);
+static void runner_miss_close(void) {
+    if (learn_fixed)
+        fprintf(stderr, "[learn] %d new addresses appended to %s\n", learn_new, learn_path);
+    cpu_interp_flow_hook = NULL;
+    if (learn_out) fclose(learn_out);
+    learn_out = NULL;
+    free(learn_fixed);
+    learn_fixed = NULL;
+    for (int i = 0; i < 256; i++) { free(learn_bank[i]); learn_bank[i] = NULL; }
+    free(learn_path);
+    learn_path = NULL;
 }
 
 /* =========================================================================
@@ -509,8 +545,8 @@ int runner_init(const char *title, const char *rom_path) {
             fprintf(stderr, "[runner] SDL_Init: %s\n", SDL_GetError());
             return 0;
         }
-        /* Enable learning automatically in headless mode */
-        putenv("RECOMP_LEARN=1");
+        /* Enable learning automatically in headless mode (RECOMP_LEARN=0 opts out) */
+        if (!getenv("RECOMP_LEARN")) putenv("RECOMP_LEARN=1");
         g_run_until = SDL_GetTicks() + g_seconds * 1000;
         fprintf(stderr, "[runner] Headless mode — running for %d s\n", g_seconds);
     } else {
@@ -1441,10 +1477,7 @@ void runner_quit(void) {
 
     if (g_screenshot_path) save_screenshot(g_screenshot_path);
     if (!g_hermetic) sram_save();   /* don't persist battery during playback/dump */
-    runner_miss_write_all();
-    free(miss_map);
-    free(miss_path);
-    miss_map = NULL;
+    runner_miss_close();
 
     if (!g_headless) {
         if (audio_dev)

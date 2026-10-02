@@ -870,7 +870,10 @@ class Disassembler:
             n_switchable = self.prg_banks - 1  # last 16KB bank is fixed
             print(f"[nesrecomp] Bank-aware recomp (UNROM): {n_switchable} banks, {len(seed_list)} seeds")
             for bank in range(n_switchable):
-                funcs = self._bfs_bank(bank, seed_list)
+                # cfg bank-qualified extra seeds ("extra_func = N:XXXX", e.g. from
+                # learn mode) seed only their own bank
+                bank_seeds = sorted(set(seed_list) | set(self.banked_extra_funcs.get(bank, [])))
+                funcs = self._bfs_bank(bank, bank_seeds)
                 if funcs:
                     self.banked_functions[bank] = funcs
                     print(f"[nesrecomp]   Bank {bank}: {len(funcs)} functions")

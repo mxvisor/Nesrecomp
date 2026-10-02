@@ -25,71 +25,71 @@ Coverage is inherently incomplete:
   collects far fewer addresses. This is why demo sync matters here — not for
   correctness, but for **coverage** (see "Why sync matters for coverage").
 
-A later, separate use of demos is to **verify the recompiler** is correct
-(replay and compare). That is far off; this document is about collection.
+Demos are not used to judge the recompiler: it is not required to match the
+interpreter's timing (ADR [0005](decisions/0005-backend-roles.md)). Its
+per-opcode correctness is checked by `tests/test_cpu_diff.py`.
 
 ## How it works
 
 ```
 ROM ──► nesrecomp.py BFS (vectors + cfg seeds) ──► generated/_full.c + _dispatch.c
-                                                         │
-play demo ──► call_by_address(PC) ─ switch(PC) ──────────┤
-                                     ├─ known: run recompiled func_XXXX()
-                                     └─ default (MISS): runner_miss(PC)  ← log
-                                                        cpu_interp_step() ← run
-                                                         │
-                                              cfg/GAME.cfg  (extra_func = XXXX)
+                                                         ▲
+play demo ──► interpreter (--interp=fceux / --interp / dispatch fallback)
+              every JMP/JSR/RTS/BRK/taken-branch target ─┐
+          or  dispatch: call_by_address(PC) MISS ────────┤
+                                                         ▼
+                                    cfg/GAME.cfg  (extra_func = XXXX / N:XXXX)
                                                          │
                                   rebuild ──► those addresses now recompiled
-                                  (repeat until no new misses)
 ```
 
-- **`runner_miss(addr)`** (`src/runner.c`): on a dispatch miss it records
-  `addr` (only `≥ $8000`, i.e. PRG-ROM) in a 64 Kbit `miss_map` and **appends**
-  it to `cfg/GAME.cfg` immediately (crash-safe; a killed run keeps what it
-  found). The missed address is then executed by the interpreter fallback, so
-  the demo keeps running correctly through unknown code.
-- **`runner_miss_init`**: enabled when `RECOMP_LEARN` is set (auto-set in
-  `--headless`). It pre-loads the existing `cfg/GAME.cfg` into `miss_map` so
-  known addresses are not re-logged. It accepts both `extra_func = XXXX` and
-  bare `XXXX` lines.
-- **`runner_miss_write_all`**: on clean exit it rewrites `cfg/GAME.cfg` sorted,
-  as `extra_func = XXXX` lines (the form `nesrecomp.py` consumes as BFS seeds).
+Learn mode is on when `RECOMP_LEARN` is set — automatically in `--headless`
+(`RECOMP_LEARN=0` opts out). Two sources feed it (`src/runner.c`, `learn_record`):
+
+- **Interpreter control flow** — `cpu_interp_step()` calls `cpu_interp_flow_hook`
+  with the new PC after JMP, JSR, RTS, BRK and taken branches: exactly the places
+  where a recompiled block ends and the dispatch looks up the next function.
+  Not after RTI (it returns wherever the interrupt hit, mid-block under the
+  interpreter). This is what lets **`--interp=fceux`, the FCEUX-synced demo
+  player, collect addresses**, also in an `INTERP=1` build. It works under
+  `--interp` and for interpreted code in dispatch mode too. Not hooked:
+  `--interp=fceux_vendor` (GPL vendor CPU) and the `INTERP=1` dispatch stub
+  (`cpu_interp_run`, used without any `--interp` flag).
+- **Dispatch misses** — `call_by_address()` found no recompiled function
+  (`runner_miss`).
+
+Rules for what is written:
+
+- Only `≥ $8000` (PRG ROM). RAM code stays with the interpreter.
+- UNROM `$8000-$BFFF` and AxROM: **bank-qualified**, `extra_func = N:XXXX`, N =
+  the bank selected when it ran; `nesrecomp.py` seeds that bank only.
+- MMC1/MMC3 `$8000-$BFFF`, MMC5 `$8000-$DFFF`: **skipped** — that code always
+  runs in the interpreter (no per-bank recompilation yet), so the seed would be
+  dropped anyway. Mirrors `Disassembler.is_switchable()`.
+- New entries are **appended** as soon as they are seen (crash-safe). The file is
+  never rewritten: `data_region`, `jump_table`, comments survive. Existing
+  `extra_func` lines (both forms) are pre-loaded so nothing is logged twice.
 
 ## Running it (the iterative loop)
 
 ```bash
-# 1. build (normal dispatch build — see the critical constraint below)
+# 1. fast interpreter-only build (no generated code needed for collection)
+make GAME=NesGame INTERP=1
+
+# 2. play the demo to the ending in sync with FCEUX; addresses go to cfg/NesGame.cfg
+./bin/NesGame --headless --interp=fceux --playback fm2/NesGame.fm2
+
+# 3. recompile with the collected addresses
 make GAME=NesGame
 
-# 2. play the demo to the ending; misses are logged to cfg/NesGame.cfg
-./bin/NesGame --headless --playback fm2/NesGame.fm2
-
-# 3. rebuild: the new cfg addresses are recompiled into the dispatch
-make GAME=NesGame
-
-# 4. repeat 2–3 until a run logs no new addresses (cfg stops growing)
+# 4. more demos (other routes) → repeat 2–3
 ```
 
-`--headless` runs at full speed, plays the whole FM2 (no wall-clock limit), and
-auto-enables learning. Each iteration the demo reaches the same (or further)
-content, recompiles what it hit, and the next run logs only newly-reached code.
-
-## Critical constraint: collection needs DISPATCH mode
-
-`runner_miss` only fires from `call_by_address`'s default case. That path is
-used **only by the normal recompiled build running the dispatch**. It is **NOT**
-used when:
-
-- **`--interp`** — the main loop calls `cpu_interp_step()` directly and never
-  calls `call_by_address`, so nothing is logged; or
-- **`INTERP=1` build** — links `src/stub_full.c` (a bare interpreter stub)
-  instead of the generated dispatch.
-
-So: **collect addresses with the normal build and WITHOUT `--interp`.** The
-`--interp` / `INTERP=1` modes are for *sync verification and fast testing*, not
-collection. (They were used to prove the interpreter plays demos correctly —
-which is what makes the dispatch's interpreter-fallback trustworthy.)
+Because `--interp=fceux` executes every instruction in the interpreter, one pass
+per demo collects everything that demo reaches — no "rebuild until no new
+misses" iterations. A dispatch-mode run afterwards
+(`./bin/NesGame --headless --playback ...`) is a check: it should log (almost)
+nothing new. `tools/verify_all.sh` runs headless too, so it also feeds the cfg.
 
 ## `cfg/GAME.cfg` directives
 
@@ -116,6 +116,8 @@ This is the practical payoff of the lag-sync work (see docs/sync-methodology.md
 "Synchronization Methodology"): with the unified FM2 timing model the test
 demos play in sync deep into / through their playthroughs, so a single demo
 collects far more of the game than a demo that desynced in the first seconds.
+`--interp=fceux` plays all 11 test demos lag-exact to the end (see
+`docs/STATUS.md`), which is why it is the collection path.
 
 ## Coverage limitations & strategy
 

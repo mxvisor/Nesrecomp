@@ -60,6 +60,8 @@ void tick_ppu_apu(void);
  */
 int  cpu_interp_step(void);
 void cpu_interp_run(uint16_t entry);
+/* Learn mode: called with the new PC after JMP/JSR/RTS/BRK/taken branch. */
+extern void (*cpu_interp_flow_hook)(uint16_t target);
 
 /* BRK handler (defined in memory.c — needs memory access) */
 void cpu_brk(void);

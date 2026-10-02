@@ -51,7 +51,7 @@ A recompiled function runs straight-line code and returns at the first control-f
 
 `--interp` / `--interp=fceux` replace step 2 with `cpu_interp_step()`; the fceux backend uses its own chunked loop (`runner_run_fceux`, `cpu_interp_run_cycles`).
 
-> **Planned change:** the target architecture is **block-boundary yield with catch-up**: keep yielding only at control flow and timing-sensitive accesses (as today), but make observable timing — including the interrupt point — equivalent to per-instruction execution. This is a large change with a strict correctness invariant (observable equivalence to the per-instruction mode). Its prerequisite — exact per-instruction cycle counts (bugs 1.4/1.5: page-cross and taken-branch penalties) — is already implemented in the emitter and in `cpu_interp.c`. Full design + checklist: `next-features.md` (external).
+> **Roles (ADR [0005](docs/decisions/0005-backend-roles.md)):** the recompiler is for speed and is **not** required to match the interpreter's timing (block-granular interrupts are accepted; per-opcode correctness is checked by `tests/test_cpu_diff.py`). beam (`--interp`, and `cpu_interp_step` as the dispatch-miss fallback) targets hardware accuracy. `--interp=fceux` plays FM2 demos in sync with FCEUX to collect addresses (learn mode). Block-boundary yield with catch-up (external `next-features.md`) remains a performance idea only, without the observable-equivalence requirement.
 
 ---
 
@@ -184,30 +184,25 @@ void call_by_address(uint16_t addr) {
 ## Learning Mode (Incremental Discovery)
 
 > **Full guide: [`docs/address-collection.md`](docs/address-collection.md)** — what
-> demos are for (collecting addresses to the game's ending), the dispatch-mode
-> requirement (collection does NOT work under `--interp` / `INTERP=1`), the
-> iterative loop, cfg directives, and why demo sync drives coverage.
+> demos are for (collecting addresses to the game's ending), sources of learned
+> addresses, the iterative loop, cfg directives, and why demo sync drives coverage.
+
+`RECOMP_LEARN` (auto-on in `--headless`; `RECOMP_LEARN=0` opts out) appends `extra_func`
+lines to `cfg/GAME.cfg` from two sources: dispatch misses (`runner_miss`) and every
+JMP/JSR/RTS/BRK/taken-branch target executed by the interpreter (`cpu_interp_flow_hook`).
+So **`--interp=fceux` — the FCEUX-synced demo player — collects addresses**, also in an
+`INTERP=1` build. UNROM/AxROM switchable-bank targets are written as `N:XXXX`; MMC1/MMC3/MMC5
+switchable-region targets are skipped (that code always runs in the interpreter). The cfg
+is only appended to, never rewritten.
 
 ```bash
-# Run headless and log missed addresses
-RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
-
-# Recompile with discovered addresses written to cfg/NesGame.cfg
-make ROM=rom/NesGame.nes GAME=NesGame
+make GAME=NesGame INTERP=1                                            # fast build
+./bin/NesGame --headless --interp=fceux --playback fm2/NesGame.fm2    # collect
+make GAME=NesGame                                                     # recompile with them
 ```
 
-Repeat until no new misses. If an FM2 file exists for the game, always prefer it over a timed headless run — it covers far more code paths and terminates automatically when playback ends:
-
-```bash
-# Preferred: FM2 playback (terminates when done, covers all code paths in the recording)
-# NOTE: always use --headless for FM2 playback — it runs at maximum speed (no SDL throttle).
-./bin/NesGame --headless --playback fm2/NesGame.fm2
-
-# Fallback: timed headless run (no FM2 available)
-RECOMP_LEARN=1 ./bin/NesGame --headless --seconds 30
-```
-
-Learning mode is enabled automatically in headless mode. After the run, re-run `make GAME=NesGame` to rebuild with the new addresses.
+Repeat with more demos for more coverage. `tools/verify_all.sh` runs headless, so it also
+feeds the cfg.
 
 ---
 
@@ -305,7 +300,8 @@ Synthetic ROMs only — runs anywhere, including cloud sessions without `rom/`.
 
 ```bash
 tools/ci_smoke.sh   # needs SDL2 dev: builds a synthetic ROM through the whole pipeline
-                    # (normal + INTERP=1), runs recompiled / --interp / --interp=fceux headless
+                    # (normal + INTERP=1), runs recompiled / --interp / --interp=fceux headless,
+                    # checks learn mode (incl. UNROM N:XXXX -> rebuild -> no misses)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `make test` and `tools/ci_smoke.sh` on every push and PR.
@@ -384,7 +380,7 @@ int g_lag_flag;               // 1 = no controller read this frame (lag metric)
 |------|-------------|
 | `-h`, `--help` / `-v`, `--verbose` | Usage / print active configuration at startup |
 | `--scale N` / `--speed N` | Window scale / fast-forward (N frames per shown frame) |
-| `--headless` | Run without SDL window (for automated testing); enables learning mode automatically |
+| `--headless` | Run without SDL window (for automated testing); enables learning mode automatically (`RECOMP_LEARN=0` to opt out) |
 | `--interp` / `--interp=beam` | Use pure CPU interpreter (beam-accurate per-dot PPU) instead of recompiled code |
 | `--interp=fceux` | FCEUX-faithful playback backend (lazy line rendering, FCEUX DoLine timing) — the demo-sync reference path |
 | `--interp=fceux_vendor` | GPL FCEUX x6502 differential oracle — only when built with local `nogpl/` sources (`INTERP=1`) |
