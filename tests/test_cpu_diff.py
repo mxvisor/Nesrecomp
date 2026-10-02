@@ -33,24 +33,7 @@ SKIP = {
 
 # Known differences, excluded from the default run: {opcode: reason}.
 # Every entry must say why. When the interpreter is fixed, delete the entry.
-_NOT_IN_INTERP = ("cpu_interp.c has no case for this illegal opcode: it falls to "
-                  "the default branch (skip 1 byte, 2 cycles)")
-KNOWN = {
-    0x0B: _NOT_IN_INTERP, 0x2B: _NOT_IN_INTERP,            # ANC #imm
-    0x4B: _NOT_IN_INTERP,                                   # ALR #imm
-    0x6B: _NOT_IN_INTERP,                                   # ARR #imm
-    0x8B: _NOT_IN_INTERP,                                   # XAA #imm (unstable)
-    0x93: _NOT_IN_INTERP, 0x9F: _NOT_IN_INTERP,             # AHX (unstable)
-    0x9B: _NOT_IN_INTERP,                                   # TAS (unstable)
-    0x9C: _NOT_IN_INTERP,                                   # SHY abs,X (unstable)
-    0x9E: _NOT_IN_INTERP,                                   # SHX abs,Y (unstable)
-    0xAB: _NOT_IN_INTERP,                                   # LAX #imm (unstable)
-    0xBB: _NOT_IN_INTERP,                                   # LAR abs,Y
-    0xCB: _NOT_IN_INTERP,                                   # SBX #imm
-    0xEB: _NOT_IN_INTERP,                                   # SBC #imm (alias of $E9)
-    0xBF: ("cpu_interp.c charges a flat 4 cycles for LAX abs,Y; hardware and "
-           "the emitter add +1 on page cross"),
-}
+KNOWN = {}
 
 SRC = ["memory.c", "cpu_interp.c", "ppu.c", "apu.c", "apu_fceux.c", "mapper.c"]
 
@@ -151,12 +134,10 @@ class TestRecompiledVsInterpreter(unittest.TestCase):
         self.assertEqual(run.returncode, 0,
                          "recompiled code differs from cpu_interp_step():\n" + run.stdout)
 
-    @unittest.expectedFailure
     def test_zero_page_pointer_wraps(self):
         """(zp,X) / (zp),Y with the pointer at $FF must fetch the high byte
         from $00 (hardware, FCEUX `GetIX`/`GetIY`, and the emitter's
-        izx_addr/izy_addr). KNOWN BUG: cpu_interp.c rd16() reads $0100
-        instead. Remove @expectedFailure once rd16 wraps in zero page."""
+        izx_addr/izy_addr). Regression test for cpu_interp.c rd16_zp()."""
         run = self.run_harness("4", "wrap")
         self.assertIn("(wrap mode)", run.stdout)
         self.assertEqual(run.returncode, 0, run.stdout)

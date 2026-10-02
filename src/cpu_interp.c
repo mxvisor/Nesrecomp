@@ -41,8 +41,11 @@ const uint8_t cpu_base_cycles[256] = {
 #define RD(a)    mem_read(a)
 #define WR(a,v)  mem_write(a,v)
 
-static inline uint16_t rd16(uint16_t a) {
-    return RD(a) | ((uint16_t)RD((uint16_t)(a+1)) << 8);
+/* 16-bit pointer fetch from the zero page: the high byte wraps within the page
+ * ($FF -> $00), like hardware and FCEUX GetIX/GetIY. Every caller is an
+ * (zp,X) / (zp),Y pointer. */
+static inline uint16_t rd16_zp(uint8_t a) {
+    return RD(a) | ((uint16_t)RD((uint8_t)(a+1)) << 8);
 }
 /* 6502 page-wrap bug for indirect JMP */
 static inline uint16_t rd16_bug(uint16_t a) {
@@ -66,8 +69,8 @@ int cpu_interp_step(void) {
 #define ABS  (cpu.PC += 3, (uint16_t)(RD(pc+1) | ((uint16_t)RD(pc+2)<<8)))
 #define ABSX (cpu.PC += 3, (uint16_t)((RD(pc+1) | ((uint16_t)RD(pc+2)<<8)) + cpu.X))
 #define ABSY (cpu.PC += 3, (uint16_t)((RD(pc+1) | ((uint16_t)RD(pc+2)<<8)) + cpu.Y))
-#define IZX  (cpu.PC += 2, rd16((uint8_t)(RD(pc+1)+cpu.X)))
-#define IZY  (cpu.PC += 2, (uint16_t)(rd16(RD(pc+1)) + cpu.Y))
+#define IZX  (cpu.PC += 2, rd16_zp((uint8_t)(RD(pc+1)+cpu.X)))
+#define IZY  (cpu.PC += 2, (uint16_t)(rd16_zp(RD(pc+1)) + cpu.Y))
 
 /* read value for given mode */
 #define RV_IMM  RD(pc+1)
@@ -92,8 +95,8 @@ int cpu_interp_step(void) {
     case 0xAD: addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
     case 0xBD: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     case 0xB9: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.A=RD(addr); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
-    case 0xA1: cpu.A=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0xB1: { uint16_t _b=rd16(RD(pc+1)); addr=_b+cpu.Y; cpu.A=RD(addr); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0xA1: cpu.A=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
+    case 0xB1: { uint16_t _b=rd16_zp(RD(pc+1)); addr=_b+cpu.Y; cpu.A=RD(addr); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- LDX --- */
     case 0xA2: cpu.X=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.X); break;
     case 0xA6: cpu.X=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.X); cycles=3; break;
@@ -119,8 +122,8 @@ int cpu_interp_step(void) {
                  RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=3; cycles=5; break; }
     case 0x99: { uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
                  RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=3; cycles=5; break; }
-    case 0x81: WR(rd16((uint8_t)(RD(pc+1)+cpu.X)),cpu.A); cpu.PC+=2; cycles=6; break;
-    case 0x91: { uint16_t b=rd16(RD(pc+1)); addr=(uint16_t)(b+cpu.Y);
+    case 0x81: WR(rd16_zp((uint8_t)(RD(pc+1)+cpu.X)),cpu.A); cpu.PC+=2; cycles=6; break;
+    case 0x91: { uint16_t b=rd16_zp(RD(pc+1)); addr=(uint16_t)(b+cpu.Y);
                  RD((uint16_t)((b&0xFF00)|(addr&0xFF))); WR(addr,cpu.A); cpu.PC+=2; cycles=6; break; }
     /* --- STX --- */
     case 0x86: WR(RD(pc+1),cpu.X); cpu.PC+=2; cycles=3; break;
@@ -149,8 +152,8 @@ int cpu_interp_step(void) {
     case 0x6D: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cycles=4; goto do_adc;
     case 0x7D: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); goto do_adc; }
     case 0x79: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); goto do_adc; }
-    case 0x61: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_adc;
-    case 0x71: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
+    case 0x61: t8=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_adc;
+    case 0x71: { uint16_t _b=rd16_zp(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
     do_adc: { uint16_t r=cpu.A+t8+cpu.C;
               cpu.V=((~(cpu.A^t8))&(cpu.A^r)&0x80)?1:0;
               cpu.C=(r>0xFF)?1:0; cpu.A=(uint8_t)r; SET_NZ(cpu.A); break; }
@@ -161,8 +164,8 @@ int cpu_interp_step(void) {
     case 0xED: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cycles=4; goto do_sbc;
     case 0xFD: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.X; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); goto do_sbc; }
     case 0xF9: { uint8_t _lo=RD(pc+1); addr=(_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y; t8=RD(addr); cpu.PC+=3; cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); goto do_sbc; }
-    case 0xE1: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_sbc;
-    case 0xF1: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
+    case 0xE1: t8=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cycles=6; goto do_sbc;
+    case 0xF1: { uint16_t _b=rd16_zp(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); }
     do_sbc: { uint16_t r=cpu.A-t8-(1-cpu.C);
               cpu.V=(((cpu.A^t8))&(cpu.A^r)&0x80)?1:0;
               cpu.C=(r<0x100)?1:0; cpu.A=(uint8_t)r; SET_NZ(cpu.A); break; }
@@ -173,8 +176,8 @@ int cpu_interp_step(void) {
     case 0x2D: cpu.A&=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
     case 0x3D: { uint8_t _lo=RD(pc+1); cpu.A&=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     case 0x39: { uint8_t _lo=RD(pc+1); cpu.A&=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
-    case 0x21: cpu.A&=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x31: { uint16_t _b=rd16(RD(pc+1)); cpu.A&=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0x21: cpu.A&=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
+    case 0x31: { uint16_t _b=rd16_zp(RD(pc+1)); cpu.A&=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- ORA --- */
     case 0x09: cpu.A|=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); break;
     case 0x05: cpu.A|=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
@@ -182,8 +185,8 @@ int cpu_interp_step(void) {
     case 0x0D: cpu.A|=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
     case 0x1D: { uint8_t _lo=RD(pc+1); cpu.A|=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     case 0x19: { uint8_t _lo=RD(pc+1); cpu.A|=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
-    case 0x01: cpu.A|=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x11: { uint16_t _b=rd16(RD(pc+1)); cpu.A|=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0x01: cpu.A|=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
+    case 0x11: { uint16_t _b=rd16_zp(RD(pc+1)); cpu.A|=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- EOR --- */
     case 0x49: cpu.A^=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); break;
     case 0x45: cpu.A^=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
@@ -191,8 +194,8 @@ int cpu_interp_step(void) {
     case 0x4D: cpu.A^=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
     case 0x5D: { uint8_t _lo=RD(pc+1); cpu.A^=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     case 0x59: { uint8_t _lo=RD(pc+1); cpu.A^=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
-    case 0x41: cpu.A^=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0x51: { uint16_t _b=rd16(RD(pc+1)); cpu.A^=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0x41: cpu.A^=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
+    case 0x51: { uint16_t _b=rd16_zp(RD(pc+1)); cpu.A^=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- BIT --- */
     case 0x24: t8=RD(RD(pc+1)); cpu.PC+=2; cpu.N=(t8>>7)&1; cpu.V=(t8>>6)&1; cpu.Z=(cpu.A&t8)?0:1; cycles=3; break;
     case 0x2C: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cpu.N=(t8>>7)&1; cpu.V=(t8>>6)&1; cpu.Z=(cpu.A&t8)?0:1; cycles=4; break;
@@ -203,8 +206,8 @@ int cpu_interp_step(void) {
     case 0xCD: t8=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4; break;
     case 0xDD: { uint8_t _lo=RD(pc+1); t8=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.X); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4+((_lo+(uint16_t)cpu.X>0xFF)?1:0); break; }
     case 0xD9: { uint8_t _lo=RD(pc+1); t8=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
-    case 0xC1: t8=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=6; break;
-    case 0xD1: { uint16_t _b=rd16(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0xC1: t8=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=6; break;
+    case 0xD1: { uint16_t _b=rd16_zp(RD(pc+1)); t8=RD(_b+cpu.Y); cpu.PC+=2; cpu.C=(cpu.A>=t8)?1:0; SET_NZ((uint8_t)(cpu.A-t8)); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- CPX --- */
     case 0xE0: t8=RD(pc+1); cpu.PC+=2; cpu.C=(cpu.X>=t8)?1:0; SET_NZ((uint8_t)(cpu.X-t8)); break;
     case 0xE4: t8=RD(RD(pc+1)); cpu.PC+=2; cpu.C=(cpu.X>=t8)?1:0; SET_NZ((uint8_t)(cpu.X-t8)); cycles=3; break;
@@ -272,7 +275,7 @@ int cpu_interp_step(void) {
     case 0x14: case 0x34: case 0x54: case 0x74: case 0xD4: case 0xF4:
         cpu.PC+=2; cycles=4; break;  /* NOP zpx */
     case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC:
-        cpu.PC+=3; cycles=4; break;  /* NOP abx */
+        cpu.PC+=3; cycles=4+((RD(pc+1)+(uint16_t)cpu.X>0xFF)?1:0); break;  /* NOP abx */
     /* --- Branches --- */
     /* branches: 2 cycles not taken, 3 taken, 4 taken+page-cross */
 #define BRANCH(cond) do { \
@@ -334,33 +337,33 @@ int cpu_interp_step(void) {
     case 0xA7: cpu.A=cpu.X=RD(RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); cycles=3; break;
     case 0xB7: cpu.A=cpu.X=RD((uint8_t)(RD(pc+1)+cpu.Y)); cpu.PC+=2; SET_NZ(cpu.A); cycles=4; break;
     case 0xAF: cpu.A=cpu.X=RD(RD(pc+1)|(uint16_t)RD(pc+2)<<8); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0xBF: cpu.A=cpu.X=RD((RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4; break;
-    case 0xA3: cpu.A=cpu.X=RD(rd16((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
-    case 0xB3: cpu.A=cpu.X=RD(rd16(RD(pc+1))+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5; break;
+    case 0xBF: { uint8_t _lo=RD(pc+1); cpu.A=cpu.X=RD((_lo|(uint16_t)RD(pc+2)<<8)+cpu.Y); cpu.PC+=3; SET_NZ(cpu.A); cycles=4+((_lo+(uint16_t)cpu.Y>0xFF)?1:0); break; }
+    case 0xA3: cpu.A=cpu.X=RD(rd16_zp((uint8_t)(RD(pc+1)+cpu.X))); cpu.PC+=2; SET_NZ(cpu.A); cycles=6; break;
+    case 0xB3: { uint16_t _b=rd16_zp(RD(pc+1)); cpu.A=cpu.X=RD(_b+cpu.Y); cpu.PC+=2; SET_NZ(cpu.A); cycles=5+(((_b&0xFF)+(uint16_t)cpu.Y>0xFF)?1:0); break; }
     /* --- SAX (undoc) --- */
     case 0x87: WR(RD(pc+1),(uint8_t)(cpu.A&cpu.X)); cpu.PC+=2; cycles=3; break;
     case 0x97: WR((uint8_t)(RD(pc+1)+cpu.Y),(uint8_t)(cpu.A&cpu.X)); cpu.PC+=2; cycles=4; break;
     case 0x8F: WR(RD(pc+1)|(uint16_t)RD(pc+2)<<8,(uint8_t)(cpu.A&cpu.X)); cpu.PC+=3; cycles=4; break;
-    case 0x83: WR(rd16((uint8_t)(RD(pc+1)+cpu.X)),(uint8_t)(cpu.A&cpu.X)); cpu.PC+=2; cycles=6; break;
+    case 0x83: WR(rd16_zp((uint8_t)(RD(pc+1)+cpu.X)),(uint8_t)(cpu.A&cpu.X)); cpu.PC+=2; cycles=6; break;
     /* --- ISB / ISC (INC + SBC, undoc) --- */
 #define DO_ISB(ea) do { uint8_t _t=(uint8_t)(RD(ea)+1); WR((ea),_t); \
     { uint16_t _r=(uint16_t)cpu.A-_t-(1-cpu.C); \
       cpu.V=(((cpu.A^_t))&(cpu.A^_r)&0x80)?1:0; \
       cpu.C=(_r<0x100)?1:0; cpu.A=(uint8_t)_r; SET_NZ(cpu.A); } } while(0)
-    case 0xE3: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_ISB(addr); break; }
+    case 0xE3: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_ISB(addr); break; }
     case 0xE7: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_ISB(addr); break; }
     case 0xEF: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_ISB(addr); break; }
-    case 0xF3: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_ISB(addr); break; }
+    case 0xF3: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_ISB(addr); break; }
     case 0xF7: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_ISB(addr); break; }
     case 0xFB: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_ISB(addr); break; }
     case 0xFF: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_ISB(addr); break; }
 #undef DO_ISB
     /* --- SLO (ASL + ORA, undoc) --- */
 #define DO_SLO(ea) do { uint8_t _t=RD(ea); cpu.C=(_t>>7)&1; _t=(uint8_t)(_t<<1); WR((ea),_t); cpu.A|=_t; SET_NZ(cpu.A); } while(0)
-    case 0x03: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_SLO(addr); break; }
+    case 0x03: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_SLO(addr); break; }
     case 0x07: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_SLO(addr); break; }
     case 0x0F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_SLO(addr); break; }
-    case 0x13: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_SLO(addr); break; }
+    case 0x13: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_SLO(addr); break; }
     case 0x17: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_SLO(addr); break; }
     case 0x1B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_SLO(addr); break; }
     case 0x1F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_SLO(addr); break; }
@@ -370,10 +373,10 @@ int cpu_interp_step(void) {
     { uint16_t _r=(uint16_t)cpu.A+_t+cpu.C; \
       cpu.V=((~(cpu.A^_t))&(cpu.A^_r)&0x80)?1:0; \
       cpu.C=(_r>0xFF)?1:0; cpu.A=(uint8_t)_r; SET_NZ(cpu.A); } } while(0)
-    case 0x63: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_RRA(addr); break; }
+    case 0x63: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_RRA(addr); break; }
     case 0x67: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_RRA(addr); break; }
     case 0x6F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_RRA(addr); break; }
-    case 0x73: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_RRA(addr); break; }
+    case 0x73: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_RRA(addr); break; }
     case 0x77: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_RRA(addr); break; }
     case 0x7B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_RRA(addr); break; }
     case 0x7F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_RRA(addr); break; }
@@ -382,10 +385,10 @@ int cpu_interp_step(void) {
     /* --- DCP (DEC mem + CMP A, undoc) --- */
 #define DO_DCP(ea) do { uint8_t _t=(uint8_t)(RD(ea)-1); WR((ea),_t); \
     cpu.C=(cpu.A>=_t)?1:0; SET_NZ((uint8_t)(cpu.A-_t)); } while(0)
-    case 0xC3: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
+    case 0xC3: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
     case 0xC7: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_DCP(addr); break; }
     case 0xCF: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_DCP(addr); break; }
-    case 0xD3: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
+    case 0xD3: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_DCP(addr); break; }
     case 0xD7: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_DCP(addr); break; }
     case 0xDB: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_DCP(addr); break; }
     case 0xDF: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_DCP(addr); break; }
@@ -394,10 +397,10 @@ int cpu_interp_step(void) {
     /* --- RLA (ROL mem + AND A, undoc) --- */
 #define DO_RLA(ea) do { uint8_t _t=RD(ea),_c=cpu.C; cpu.C=(_t>>7)&1; _t=(uint8_t)((_t<<1)|_c); WR((ea),_t); \
     cpu.A&=_t; SET_NZ(cpu.A); } while(0)
-    case 0x23: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
+    case 0x23: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
     case 0x27: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_RLA(addr); break; }
     case 0x2F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_RLA(addr); break; }
-    case 0x33: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
+    case 0x33: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_RLA(addr); break; }
     case 0x37: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_RLA(addr); break; }
     case 0x3B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_RLA(addr); break; }
     case 0x3F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_RLA(addr); break; }
@@ -406,14 +409,60 @@ int cpu_interp_step(void) {
     /* --- SRE (LSR mem + EOR A, undoc) --- */
 #define DO_SRE(ea) do { uint8_t _t=RD(ea); cpu.C=_t&1; _t=(uint8_t)(_t>>1); WR((ea),_t); \
     cpu.A^=_t; SET_NZ(cpu.A); } while(0)
-    case 0x43: { addr=rd16((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
+    case 0x43: { addr=rd16_zp((uint8_t)(RD(pc+1)+cpu.X)); cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
     case 0x47: { addr=RD(pc+1); cpu.PC+=2; cycles=5; DO_SRE(addr); break; }
     case 0x4F: { addr=RD(pc+1)|(uint16_t)RD(pc+2)<<8; cpu.PC+=3; cycles=6; DO_SRE(addr); break; }
-    case 0x53: { addr=rd16(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
+    case 0x53: { addr=rd16_zp(RD(pc+1))+cpu.Y; cpu.PC+=2; cycles=8; DO_SRE(addr); break; }
     case 0x57: { addr=(uint8_t)(RD(pc+1)+cpu.X); cpu.PC+=2; cycles=6; DO_SRE(addr); break; }
     case 0x5B: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.Y; cpu.PC+=3; cycles=7; DO_SRE(addr); break; }
     case 0x5F: { addr=(RD(pc+1)|(uint16_t)RD(pc+2)<<8)+cpu.X; cpu.PC+=3; cycles=7; DO_SRE(addr); break; }
 #undef DO_SRE
+
+    /* --- Illegal opcodes without a memory RMW (semantics follow FCEUX) --- */
+    case 0x0B: case 0x2B:   /* ANC #imm: AND, C = N */
+        cpu.A&=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); cpu.C=cpu.N; break;
+    case 0x4B:              /* ALR #imm: AND + LSR A */
+        t8=cpu.A&RD(pc+1); cpu.PC+=2; cpu.C=t8&1; cpu.A=t8>>1; SET_NZ(cpu.A); break;
+    case 0x6B:              /* ARR #imm: AND + ROR A, C = bit6, V = bit6^bit5 */
+        t8=cpu.A&RD(pc+1); cpu.PC+=2;
+        cpu.A=(uint8_t)((t8>>1)|(cpu.C<<7));
+        cpu.C=(cpu.A>>6)&1; cpu.V=((cpu.A>>5)^(cpu.A>>6))&1; SET_NZ(cpu.A); break;
+    case 0x8B:              /* XAA #imm (unstable): A = (A|$EE) & X & imm */
+        cpu.A=(uint8_t)((cpu.A|0xEE)&cpu.X&RD(pc+1)); cpu.PC+=2; SET_NZ(cpu.A); break;
+    case 0xAB:              /* LAX #imm (unstable): A = X = imm (FCEUX ORs A with $FF) */
+        cpu.A=cpu.X=RD(pc+1); cpu.PC+=2; SET_NZ(cpu.A); break;
+    case 0xCB:              /* SBX #imm: X = (A&X) - imm, C = no borrow */
+        t16=(uint16_t)(cpu.A&cpu.X)-RD(pc+1); cpu.PC+=2;
+        cpu.C=(t16<0x100)?1:0; cpu.X=(uint8_t)t16; SET_NZ(cpu.X); break;
+    case 0xEB:              /* SBC #imm (alias of $E9) */
+        t8=RD(pc+1); cpu.PC+=2; goto do_sbc;
+    case 0xBB: {            /* LAR abs,Y: A = X = SP = mem & SP (no page-cross cycle in FCEUX) */
+        uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        t8=RD(addr)&cpu.SP; cpu.A=cpu.X=cpu.SP=t8; cpu.PC+=3; SET_NZ(t8); cycles=4; break; }
+    /* Unstable stores: value uses the high byte of the BASE address + 1 (AHX/TAS)
+     * or of the effective address + 1 (SHY/SHX, whose address high byte is then
+     * replaced by the value) — exactly as FCEUX does. */
+    case 0x93: {            /* AHX (zp),Y */
+        uint16_t b=rd16_zp(RD(pc+1)); addr=(uint16_t)(b+cpu.Y);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        WR(addr,(uint8_t)(cpu.A&cpu.X&((b>>8)+1))); cpu.PC+=2; cycles=6; break; }
+    case 0x9F: {            /* AHX abs,Y */
+        uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        WR(addr,(uint8_t)(cpu.A&cpu.X&((b>>8)+1))); cpu.PC+=3; cycles=5; break; }
+    case 0x9B: {            /* TAS abs,Y: SP = A&X, store SP & (base hi + 1) */
+        uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        cpu.SP=cpu.A&cpu.X; WR(addr,(uint8_t)(cpu.SP&((b>>8)+1))); cpu.PC+=3; cycles=5; break; }
+    case 0x9C: {            /* SHY abs,X */
+        uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.X);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        t8=(uint8_t)(cpu.Y&((addr>>8)+1)); WR((uint16_t)((t8<<8)|(addr&0xFF)),t8); cpu.PC+=3; cycles=5; break; }
+    case 0x9E: {            /* SHX abs,Y */
+        uint16_t b=RD(pc+1)|(uint16_t)RD(pc+2)<<8; addr=(uint16_t)(b+cpu.Y);
+        RD((uint16_t)((b&0xFF00)|(addr&0xFF)));
+        t8=(uint8_t)(cpu.X&((addr>>8)+1)); WR((uint16_t)((t8<<8)|(addr&0xFF)),t8); cpu.PC+=3; cycles=5; break; }
 
     default:
         /* Unknown opcode — skip 1 byte */

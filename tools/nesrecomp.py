@@ -253,7 +253,11 @@ _PAGE_CROSS_OPCODES = {
     0x1D, 0x19, 0x11,  # ORA abx/aby/izy
     0x5D, 0x59, 0x51,  # EOR abx/aby/izy
     0xDD, 0xD9, 0xD1,  # CMP abx/aby/izy
+    0xBF, 0xB3,        # LAX aby/izy        (FCEUX LD_ABY / LD_IY)
+    0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC,  # NOP abx (FCEUX LD_ABX)
 }
+# LAR abs,Y ($BB) is deliberately absent: FCEUX charges a flat 4 cycles
+# (RMW_ABY has no page-cross cycle), and FCEUX is the sync reference.
 for _opc in _PAGE_CROSS_OPCODES:
     OPTABLE[_opc].page_cross = True
 
@@ -458,7 +462,7 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
         # after a bank switch to signal "resume at this address in the new bank".
         # Set cpu.PC to the STP's own address so the dispatch fetches whatever the
         # *new* bank has at that address, rather than re-calling the function entry.
-        lines += [f"/* STP — halt; dispatch resumes at ${{pc:04X}} in new bank */",
+        lines += [f"/* STP — halt; dispatch resumes at ${pc:04X} in new bank */",
                   f"cpu.PC = 0x{pc:04X};",
                   "return;"]
     elif mn == "JSR":
@@ -536,26 +540,29 @@ def emit_instruction(op: Op, operand: int, pc: int, labels: Set[int]) -> List[st
             "  cpu.A = (uint8_t)((_t >> 1) | (cpu.C << 7));",
             "  cpu.C = (cpu.A >> 6) & 1; cpu.V = ((cpu.A >> 5) ^ (cpu.A >> 6)) & 1; SET_NZ(cpu.A); }",
         ]
-    elif mn == "XAA":   # unstable: best-effort A = X & #imm
-        lines += [f"cpu.A = cpu.X & {rd()}; SET_NZ(cpu.A);"]
+    elif mn == "XAA":   # unstable (FCEUX): A = (A | $EE) & X & #imm
+        lines += [f"cpu.A = (uint8_t)((cpu.A | 0xEE) & cpu.X & {rd()}); SET_NZ(cpu.A);"]
     elif mn == "SBX":   # (A & X) - #imm → X, sets C
         lines += [
             f"{{ uint16_t _r = (uint16_t)(cpu.A & cpu.X) - {rd()};",
             "  cpu.C = (_r < 0x100) ? 1 : 0; cpu.X = (uint8_t)_r; SET_NZ(cpu.X); }",
         ]
     # -- Undocumented unstable stores --
-    elif mn == "AHX":   # store A & X & (addr_hi + 1)
+    # Unstable stores follow FCEUX: AHX/TAS use the BASE address high byte + 1
+    # (effective address - Y); SHY/SHX use the effective address high byte + 1 and
+    # then replace the address high byte with the stored value.
+    elif mn == "AHX":
         a = ae()
-        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.A & cpu.X & (uint8_t)((_a >> 8) + 1)); }}"]
-    elif mn == "TAS":   # SP = A & X; store SP & (addr_hi + 1)
+        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.A & cpu.X & (uint8_t)((((uint16_t)(_a - cpu.Y)) >> 8) + 1)); }}"]
+    elif mn == "TAS":   # SP = A & X
         a = ae()
-        lines += [f"{{ cpu.SP = cpu.A & cpu.X; uint16_t _a = {a}; mem_write(_a, cpu.SP & (uint8_t)((_a >> 8) + 1)); }}"]
-    elif mn == "SHY":   # store Y & (addr_hi + 1)
+        lines += [f"{{ cpu.SP = cpu.A & cpu.X; uint16_t _a = {a}; mem_write(_a, cpu.SP & (uint8_t)((((uint16_t)(_a - cpu.Y)) >> 8) + 1)); }}"]
+    elif mn == "SHY":
         a = ae()
-        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.Y & (uint8_t)((_a >> 8) + 1)); }}"]
-    elif mn == "SHX":   # store X & (addr_hi + 1)
+        lines += [f"{{ uint16_t _a = {a}; uint8_t _v = cpu.Y & (uint8_t)((_a >> 8) + 1); mem_write((uint16_t)((_v << 8) | (_a & 0xFF)), _v); }}"]
+    elif mn == "SHX":
         a = ae()
-        lines += [f"{{ uint16_t _a = {a}; mem_write(_a, cpu.X & (uint8_t)((_a >> 8) + 1)); }}"]
+        lines += [f"{{ uint16_t _a = {a}; uint8_t _v = cpu.X & (uint8_t)((_a >> 8) + 1); mem_write((uint16_t)((_v << 8) | (_a & 0xFF)), _v); }}"]
     elif mn == "LAR":   # LDA/LDX/TSX from mem & SP
         lines += [f"{{ uint8_t _t = mem_read({ae()}) & cpu.SP; cpu.A = cpu.X = cpu.SP = _t; SET_NZ(_t); }}"]
     else:
